@@ -46,12 +46,13 @@
   "author": "",
   "license": "MIT",
   "repository": {
-    "url": "git+https://github.com/your-username/agent-logger.git"
+    "type": "git",
+    "url": "git+https://github.com/sirmews/agent-logger.git"
   },
   "bugs": {
-    "url": "https://github.com/your-username/agent-logger/issues"
+    "url": "https://github.com/sirmews/agent-logger/issues"
   },
-  "homepage": "https://github.com/your-username/agent-logger#readme",
+  "homepage": "https://github.com/sirmews/agent-logger#readme",
   "peerDependencies": {
     "@opencode-ai/plugin": ">=1.0.0"
   },
