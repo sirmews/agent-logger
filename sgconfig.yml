@@ -1,0 +1,10 @@
+ruleDirs:
+  - .ast-grep/rules/security
+  - .ast-grep/rules/reliability
+  - .ast-grep/rules/maintainability
+
+ignores:
+  - "**/dist/**"
+  - "**/node_modules/**"
+  - "**/*.test.ts"
+  - "**/__tests__/**"

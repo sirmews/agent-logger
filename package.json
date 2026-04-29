@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json.schemastore.org/package.json",
+  "name": "agent-logger",
+  "version": "0.2.0",
+  "description": "Agent telemetry and training corpus logger for OpenCode",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc --project tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "dev": "tsc --project tsconfig.build.json --watch",
+    "test": "bun test",
+    "test:watch": "bun test --watch",
+    "prepublishOnly": "bun scripts/pre-publish.ts && bun run build",
+    "lint": "bun run lint:jsdoc && bun run lint:ai",
+    "lint:ai": "sg scan --config sgconfig.yml",
+    "lint:ai:strict": "sg scan --config sgconfig.yml --error",
+    "lint:all": "bun run lint:jsdoc && bun run lint:ai",
+    "lint:jsdoc": "eslint --config eslint.jsdoc.config.js",
+    "lint:version": "bun scripts/check-version.ts",
+    "quality": "bun run lint:version && bun run typecheck && bun run test && bun run lint:all",
+    "release": "bun run quality && standard-version",
+    "release:minor": "bun run quality && standard-version --release-as minor",
+    "release:patch": "bun run quality && standard-version --release-as patch",
+    "release:major": "bun run quality && standard-version --release-as major"
+  },
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "logging",
+    "fine-tuning",
+    "training-data",
+    "ai",
+    "developer-tools"
+  ],
+  "author": "",
+  "license": "MIT",
+  "repository": {
+    "url": "git+https://github.com/your-username/agent-logger.git"
+  },
+  "bugs": {
+    "url": "https://github.com/your-username/agent-logger/issues"
+  },
+  "homepage": "https://github.com/your-username/agent-logger#readme",
+  "peerDependencies": {
+    "@opencode-ai/plugin": ">=1.0.0"
+  },
+  "devDependencies": {
+    "@ast-grep/cli": "^0.39.0",
+    "@eslint/js": "^10.0.1",
+    "@opencode-ai/plugin": "latest",
+    "@types/node": "^22.10.6",
+    "bun-types": "latest",
+    "eslint": "^10.2.1",
+    "eslint-plugin-jsdoc": "^62.9.0",
+    "standard-version": "^9.5.0",
+    "typescript": "^5.8.3",
+    "typescript-eslint": "^8.58.2"
+  },
+  "trustedDependencies": [
+    "@ast-grep/cli"
+  ]
+}

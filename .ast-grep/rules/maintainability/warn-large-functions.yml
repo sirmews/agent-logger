@@ -1,0 +1,13 @@
+id: warn-large-functions
+category: maintainability
+severity: warning
+language: TypeScript
+message: "Keep functions under 260 LOC. Extract helpers before they grow further."
+note: |
+  Long functions are harder to review and test. Split responsibilities into smaller helpers.
+rule:
+  kind: function_declaration
+  regex: "(?s)(?:.*\\n){261,}"
+files:
+  - "src/**/*.ts"
+  - "index.ts"

@@ -1,0 +1,32 @@
+id: no-floating-promises
+category: reliability
+severity: warning
+language: TypeScript
+message: "Promises must be awaited, returned, or passed to handler."
+note: |
+  A Promise that is not awaited, returned, or passed to a handler is dropped.
+
+  Correct:
+    await fetch(...)
+
+  Anti-pattern:
+    fetch(...) // Floating promise - dropped result
+rule:
+  all:
+    - kind: call_expression
+    - any:
+        - pattern: fetch($$$)
+        - pattern: env.$_.get($$$)
+        - pattern: env.$_.put($$$)
+        - pattern: env.$_.send($$$)
+        - pattern: env.$_.create($$$)
+  not:
+    inside:
+      stopBy: end
+      any:
+        - kind: await_expression
+        - kind: return_statement
+        - pattern: void $$$
+files:
+  - "src/**/*.ts"
+  - "index.ts"

@@ -1,0 +1,12 @@
+id: transactional-migrations
+language: typescript
+rule:
+  all:
+    - pattern: $DB.exec($SQL)
+    - regex: "(?i)CREATE|ALTER|DROP|RENAME"
+    - not:
+        inside:
+          pattern: $DB.transaction($$$BODY)
+          stopBy: end
+message: "Schema modifications must be wrapped in a transaction to ensure atomicity across restarts."
+severity: error

@@ -1,0 +1,14 @@
+id: detect-unredacted-export
+language: typescript
+rule:
+  all:
+    - pattern: JSON.stringify($PAYLOAD)
+    - inside:
+        pattern: "export_training_data: tool({ $$$ })"
+        stopBy: end
+    - not:
+        inside:
+          pattern: redactPayload($$$)
+          stopBy: end
+message: "Potential data leak: payload stringified for export without calling `redactPayload`."
+severity: error

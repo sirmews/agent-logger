@@ -1,0 +1,13 @@
+id: enforce-instrumented-writes
+language: typescript
+rule:
+  all:
+    - any:
+        - pattern: stmt.$METHOD.run($$$ARGS)
+        - pattern: db.prepare($QUERY).run($$$ARGS)
+    - not:
+        inside:
+          pattern: instrument($NAME, () => { $$$BODY })
+          stopBy: end
+message: "All database writes must be wrapped in `instrument` to monitor latency on the event hot path."
+severity: warning

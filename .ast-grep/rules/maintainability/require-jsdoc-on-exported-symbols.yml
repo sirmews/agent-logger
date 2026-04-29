@@ -1,0 +1,16 @@
+id: require-jsdoc-on-exported-symbols
+category: maintainability
+severity: warning
+language: TypeScript
+message: "Document exported plugin APIs with JSDoc."
+note: |
+  Exports form the plugin integration surface. Add JSDoc blocks so model
+  generated changes stay reviewable and easy to use.
+rule:
+  any:
+    - pattern: export function $NAME($$$) { $$$ }
+    - pattern: export const $NAME = ($$$) => { $$$ }
+    - pattern: export const $NAME = async ($$$) => { $$$ }
+files:
+  - "src/**/*.ts"
+  - "index.ts"
