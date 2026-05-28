@@ -1,4 +1,4 @@
-import { describe, expect, test, beforeAll, afterAll } from "bun:test";
+import { describe, expect, test, beforeAll, afterAll, beforeEach } from "bun:test";
 import { execSync } from "child_process";
 import { readFileSync, existsSync, unlinkSync } from "fs";
 import { resolve, join } from "path";
@@ -20,6 +20,13 @@ describe("Codex Hook Commands Protocol Verification", () => {
     const fs = require("fs");
     if (fs.existsSync("dist/src/hooks")) {
       fs.cpSync("dist/src/hooks", "dist/hooks", { recursive: true });
+    }
+  });
+
+  // Clear test buffer before each test to isolate states and allow independent runs
+  beforeEach(() => {
+    if (existsSync(TEST_BUFFER_PATH)) {
+      unlinkSync(TEST_BUFFER_PATH);
     }
   });
 
@@ -74,9 +81,9 @@ describe("Codex Hook Commands Protocol Verification", () => {
 
     // Verify written buffer line
     const lines = readFileSync(TEST_BUFFER_PATH, "utf-8").trim().split("\n");
-    expect(lines.length).toBe(2);
+    expect(lines.length).toBe(1);
 
-    const record = JSON.parse(lines[1]);
+    const record = JSON.parse(lines[0]);
     expect(record.event).toBe("Stop");
     expect(record.type).toBe("task_complete");
     expect(record.sessionID).toBe("session_test_123");
@@ -101,9 +108,9 @@ describe("Codex Hook Commands Protocol Verification", () => {
 
     // Verify written buffer line
     const lines = readFileSync(TEST_BUFFER_PATH, "utf-8").trim().split("\n");
-    expect(lines.length).toBe(3);
+    expect(lines.length).toBe(1);
 
-    const record = JSON.parse(lines[2]);
+    const record = JSON.parse(lines[0]);
     expect(record.event).toBe("UserPromptSubmit");
     expect(record.sessionID).toBe("session_test_123");
     expect(record.messageID).toBe("msg_user_1");
@@ -127,9 +134,9 @@ describe("Codex Hook Commands Protocol Verification", () => {
 
     // Verify written buffer line
     const lines = readFileSync(TEST_BUFFER_PATH, "utf-8").trim().split("\n");
-    expect(lines.length).toBe(4);
+    expect(lines.length).toBe(1);
 
-    const record = JSON.parse(lines[3]);
+    const record = JSON.parse(lines[0]);
     expect(record.event).toBe("PreToolUse");
     expect(record.sessionID).toBe("session_test_123");
     expect(record.callID).toBe("call_tool_1");
@@ -154,9 +161,9 @@ describe("Codex Hook Commands Protocol Verification", () => {
 
     // Verify written buffer line
     const lines = readFileSync(TEST_BUFFER_PATH, "utf-8").trim().split("\n");
-    expect(lines.length).toBe(5);
+    expect(lines.length).toBe(1);
 
-    const record = JSON.parse(lines[4]);
+    const record = JSON.parse(lines[0]);
     expect(record.event).toBe("PostToolUse");
     expect(record.sessionID).toBe("session_test_123");
     expect(record.callID).toBe("call_tool_1");
