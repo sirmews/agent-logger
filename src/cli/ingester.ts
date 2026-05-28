@@ -156,9 +156,8 @@ export async function ingestTelemetry(bufferPath: string, db: Database): Promise
         const status = payload.status ?? "completed";
         const timestamp = payload.timestamp ?? payload.localTimestamp ?? Date.now();
 
-        if (sessionId) {
-          ensureSessionExists(db, sessionId, timestamp);
-        }
+        const resolvedSessionId = sessionId || "unknown";
+        ensureSessionExists(db, resolvedSessionId, timestamp);
 
         const existing = db.prepare("SELECT start_time FROM codex_tool_calls WHERE call_id = ?").get(callId) as { start_time: number } | undefined;
         let durationMs: number | null = null;
@@ -173,7 +172,7 @@ export async function ingestTelemetry(bufferPath: string, db: Database): Promise
             db.prepare(`
               INSERT INTO codex_tool_calls (call_id, session_id, tool_name, output, status, end_time, duration_ms)
               VALUES (?, ?, ?, ?, ?, ?, ?)
-            `).run(callId, sessionId || "unknown", toolName || "unknown", truncatedOutput, status, timestamp, durationMs);
+            `).run(callId, resolvedSessionId, toolName || "unknown", truncatedOutput, status, timestamp, durationMs);
           });
         } else {
           instrument("PostToolUse:update", () => {

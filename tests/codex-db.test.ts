@@ -229,4 +229,37 @@ describe("Codex Ingester & DB Structuring Tests", () => {
 
     db.close();
   });
+
+  test("Ingest trajectory with missing sessionID in PostToolUse handles unknown fallback safely", async () => {
+    const trajectory = [
+      {
+        event: "PostToolUse",
+        callID: "call_falsy_sess",
+        tool: "Read",
+        output: "isolated contents",
+        status: "completed",
+        timestamp: 500,
+      },
+    ];
+
+    const lines = trajectory.map((event) => JSON.stringify(event)).join("\n");
+    fs.writeFileSync(TEST_BUFFER_PATH, lines);
+
+    const db = getIngestDb(TEST_DB_PATH);
+    await ingestTelemetry(TEST_BUFFER_PATH, db);
+
+    // Verify session
+    const session = db.prepare("SELECT * FROM codex_sessions WHERE session_id = 'unknown'").get() as any;
+    expect(session).toBeDefined();
+    expect(session.project_path).toBe("unknown");
+
+    // Verify tool call
+    const toolCall = db.prepare("SELECT * FROM codex_tool_calls WHERE call_id = 'call_falsy_sess'").get() as any;
+    expect(toolCall).toBeDefined();
+    expect(toolCall.session_id).toBe("unknown");
+    expect(toolCall.status).toBe("completed");
+    expect(toolCall.output).toBe("isolated contents");
+
+    db.close();
+  });
 });
