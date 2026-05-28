@@ -1,0 +1,20 @@
+{
+  "name": "personal-logger-marketplace",
+  "interface": {
+    "displayName": "Personal Logger Marketplace"
+  },
+  "plugins": [
+    {
+      "name": "codex-communication-logger",
+      "source": {
+        "source": "local",
+        "path": "."
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools"
+    }
+  ]
+}
