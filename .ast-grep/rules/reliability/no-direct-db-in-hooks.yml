@@ -1,0 +1,12 @@
+id: no-direct-db-in-hooks
+category: reliability
+severity: error
+language: TypeScript
+message: "Codex hook files must never read or write from SQLite directly to protect hot-path latency. Use `writeToBuffer`."
+rule:
+  any:
+    - pattern: import $_ from 'bun:sqlite'
+    - pattern: import $_ from 'better-sqlite3'
+    - pattern: new Database($$$)
+files:
+  - "src/hooks/**/*.ts"
