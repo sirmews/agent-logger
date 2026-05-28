@@ -1,0 +1,14 @@
+id: no-order-dependent-test-indexing
+category: maintainability
+severity: warning
+language: TypeScript
+message: "Accessing non-zero array indices (e.g., index 1 or greater) on lines, rows, or records can indicate order-dependency and shared mutable state. Prefer isolating each test run so assertions can always verify index 0."
+rule:
+  pattern: $LINES[$INDEX]
+constraints:
+  LINES:
+    regex: "(?i)lines|rows|records|data|parts|msgs"
+  INDEX:
+    regex: "^[1-9][0-9]*$"
+files:
+  - "tests/**/*.ts"
