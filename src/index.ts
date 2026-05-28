@@ -230,6 +230,7 @@ function openDb(dbPath: string = DB_PATH): Database {
 }
 
 function migrate(db: Database): void {
+  const instrument = (_name: string, fn: () => void) => fn();
   const runMigrations = db.transaction(() => {
     db.exec(`
       CREATE TABLE IF NOT EXISTS schema_version (
@@ -395,7 +396,9 @@ function migrate(db: Database): void {
         CREATE INDEX IF NOT EXISTS idx_training_efficiency    ON training_examples(efficiency_score);
         CREATE INDEX IF NOT EXISTS idx_training_success       ON training_examples(task_success);
       `);
-      db.prepare("INSERT INTO schema_version (version) VALUES (?)").run(1);
+      instrument("migrate:schema_v1", () => {
+        db.prepare("INSERT INTO schema_version (version) VALUES (?)").run(1);
+      });
     }
 
     if (current < 2) {
@@ -411,7 +414,9 @@ function migrate(db: Database): void {
         );
         CREATE INDEX IF NOT EXISTS idx_session_diffs_session ON session_diffs(session_id);
       `);
-      db.prepare("INSERT INTO schema_version (version) VALUES (?)").run(2);
+      instrument("migrate:schema_v2", () => {
+        db.prepare("INSERT INTO schema_version (version) VALUES (?)").run(2);
+      });
     }
 
     if (current < 3) {
@@ -430,7 +435,9 @@ function migrate(db: Database): void {
         CREATE INDEX IF NOT EXISTS idx_session_quality_profile_score ON session_quality(profile_name, quality_score);
         CREATE INDEX IF NOT EXISTS idx_session_quality_session ON session_quality(session_id);
       `);
-      db.prepare("INSERT INTO schema_version (version) VALUES (?)").run(3);
+      instrument("migrate:schema_v3", () => {
+        db.prepare("INSERT INTO schema_version (version) VALUES (?)").run(3);
+      });
     }
   });
 
@@ -980,25 +987,27 @@ export const CommunicationLoggerPlugin: Plugin = async ({
       WHERE session_id = ? AND part_type = 'tool'
     `).get(sessionID) as any;
 
-    db.prepare(`
-      UPDATE sessions SET
-        total_messages         = ?,
-        total_cost             = ?,
-        total_input_tokens     = ?,
-        total_output_tokens    = ?,
-        total_reasoning_tokens = ?,
-        total_tool_calls       = ?,
-        updated_at             = CURRENT_TIMESTAMP
-      WHERE session_id = ?
-    `).run(
-      agg?.total_messages ?? 0,
-      agg?.total_cost ?? 0,
-      agg?.total_input_tokens ?? 0,
-      agg?.total_output_tokens ?? 0,
-      agg?.total_reasoning_tokens ?? 0,
-      toolAgg?.total_tool_calls ?? 0,
-      sessionID,
-    );
+    instrument("refreshSessionAggregates", () => {
+      db.prepare(`
+        UPDATE sessions SET
+          total_messages         = ?,
+          total_cost             = ?,
+          total_input_tokens     = ?,
+          total_output_tokens    = ?,
+          total_reasoning_tokens = ?,
+          total_tool_calls       = ?,
+          updated_at             = CURRENT_TIMESTAMP
+        WHERE session_id = ?
+      `).run(
+        agg?.total_messages ?? 0,
+        agg?.total_cost ?? 0,
+        agg?.total_input_tokens ?? 0,
+        agg?.total_output_tokens ?? 0,
+        agg?.total_reasoning_tokens ?? 0,
+        toolAgg?.total_tool_calls ?? 0,
+        sessionID,
+      );
+    });
   });
 
   function refreshTrainingExample(sessionID: string): void {
@@ -1068,39 +1077,43 @@ export const CommunicationLoggerPlugin: Plugin = async ({
     });
     const qualityProfile = getQualityProfile(process.env.AGENT_LOGGER_QUALITY_PROFILE);
 
-    db.prepare(`
-      INSERT INTO training_examples
-        (session_id, task_success, has_error, efficiency_score,
-         total_duration_ms, tool_count, tool_names, finish_reason, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-      ON CONFLICT(session_id) DO UPDATE SET
-        task_success      = excluded.task_success,
-        has_error         = excluded.has_error,
-        efficiency_score  = excluded.efficiency_score,
-        total_duration_ms = excluded.total_duration_ms,
-        tool_count        = excluded.tool_count,
-        tool_names        = excluded.tool_names,
-        finish_reason     = excluded.finish_reason,
-        updated_at        = CURRENT_TIMESTAMP
-    `).run(
-      sessionID,
-      taskSuccess ? 1 : 0,
-      hasError ? 1 : 0,
-      efficiency,
-      toolStats?.total_duration_ms ?? 0,
-      total,
-      JSON.stringify(toolNames),
-      lastAssistant?.finish_reason ?? null,
-    );
+    instrument("refreshTrainingExample", () => {
+      db.prepare(`
+        INSERT INTO training_examples
+          (session_id, task_success, has_error, efficiency_score,
+           total_duration_ms, tool_count, tool_names, finish_reason, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(session_id) DO UPDATE SET
+          task_success      = excluded.task_success,
+          has_error         = excluded.has_error,
+          efficiency_score  = excluded.efficiency_score,
+          total_duration_ms = excluded.total_duration_ms,
+          tool_count        = excluded.tool_count,
+          tool_names        = excluded.tool_names,
+          finish_reason     = excluded.finish_reason,
+          updated_at        = CURRENT_TIMESTAMP
+      `).run(
+        sessionID,
+        taskSuccess ? 1 : 0,
+        hasError ? 1 : 0,
+        efficiency,
+        toolStats?.total_duration_ms ?? 0,
+        total,
+        JSON.stringify(toolNames),
+        lastAssistant?.finish_reason ?? null,
+      );
+    });
 
-    stmt.upsertSessionQuality.run(
-      sessionID,
-      qualityProfile.name,
-      quality.score,
-      jsonOrNull(qualityProfile),
-      jsonOrNull(quality.components),
-      jsonOrNull(quality.blockers),
-    );
+    instrument("refreshTrainingExample:quality", () => {
+      stmt.upsertSessionQuality.run(
+        sessionID,
+        qualityProfile.name,
+        quality.score,
+        jsonOrNull(qualityProfile),
+        jsonOrNull(quality.components),
+        jsonOrNull(quality.blockers),
+      );
+    });
   }
 
   function handleMessageUpdated(props: any): void {
@@ -1254,52 +1267,66 @@ export const CommunicationLoggerPlugin: Plugin = async ({
           switch (t) {
             case "session.created": {
               const info = p.info ?? {};
-              stmt.upsertSession.run(
-                sid,
-                projectName,
-                directory,
-                info.title ?? null,
-                info.time?.created ?? Date.now(),
-              );
+              instrument("session.created", () => {
+                stmt.upsertSession.run(
+                  sid,
+                  projectName,
+                  directory,
+                  info.title ?? null,
+                  info.time?.created ?? Date.now(),
+                );
+              });
               break;
             }
             case "session.updated": {
               const info = p.info ?? {};
               if (info.title) {
-                db.prepare(
-                  "UPDATE sessions SET title = ?, updated_at = CURRENT_TIMESTAMP WHERE session_id = ?",
-                ).run(info.title, sid);
+                instrument("session.updated", () => {
+                  db.prepare(
+                    "UPDATE sessions SET title = ?, updated_at = CURRENT_TIMESTAMP WHERE session_id = ?",
+                  ).run(info.title, sid);
+                });
               }
               break;
             }
             case "session.diff":
-              for (const d of p.diff || []) {
-                stmt.insertSessionDiff.run(
-                  sid,
-                  d.file ?? d.path ?? "unknown",
-                  d.additions ?? 0,
-                  d.deletions ?? 0,
-                  d.status ?? "modified",
-                  Date.now(),
-                );
-              }
+              instrument("session.diff", () => {
+                for (const d of p.diff || []) {
+                  stmt.insertSessionDiff.run(
+                    sid,
+                    d.file ?? d.path ?? "unknown",
+                    d.additions ?? 0,
+                    d.deletions ?? 0,
+                    d.status ?? "modified",
+                    Date.now(),
+                  );
+                }
+              });
               break;
             case "session.deleted":
-              stmt.setSessionLifecycle.run("deleted", Date.now(), sid);
+              instrument("session.deleted", () => {
+                stmt.setSessionLifecycle.run("deleted", Date.now(), sid);
+              });
               break;
             case "session.error":
-              stmt.bumpSessionError.run(jsonOrNull(p.error), sid);
-              stmt.setSessionLifecycle.run("error", null, sid);
+              instrument("session.error", () => {
+                stmt.bumpSessionError.run(jsonOrNull(p.error), sid);
+                stmt.setSessionLifecycle.run("error", null, sid);
+              });
               break;
             case "session.status": {
               const type = p.status?.type;
               if (type) {
-                stmt.setSessionStatus.run(type, sid);
+                instrument("session.status:update", () => {
+                  stmt.setSessionStatus.run(type, sid);
+                });
                 if (type === "idle") {
                   try {
                     refreshSessionAggregates(sid);
                     refreshTrainingExample(sid);
-                    stmt.setSessionLifecycle.run("completed", null, sid);
+                    instrument("session.status:completed", () => {
+                      stmt.setSessionLifecycle.run("completed", null, sid);
+                    });
                   } catch (e) {
                     void log("warn", "refresh on idle failed", {
                       sessionID: sid,
@@ -1322,35 +1349,43 @@ export const CommunicationLoggerPlugin: Plugin = async ({
             handlePartUpdated(p);
             return;
           case "permission.asked":
-            stmt.upsertPermissionAsked.run(
-              p.id ?? `${p.sessionID}-${Date.now()}`,
-              p.sessionID,
-              p.permission ?? null,
-              jsonOrNull(p.patterns),
-              jsonOrNull(p.metadata),
-              p.tool?.messageID ?? null,
-              p.tool?.callID ?? null,
-              Date.now(),
-            );
+            instrument("permission.asked", () => {
+              stmt.upsertPermissionAsked.run(
+                p.id ?? `${p.sessionID}-${Date.now()}`,
+                p.sessionID,
+                p.permission ?? null,
+                jsonOrNull(p.patterns),
+                jsonOrNull(p.metadata),
+                p.tool?.messageID ?? null,
+                p.tool?.callID ?? null,
+                Date.now(),
+              );
+            });
             return;
           case "permission.replied":
-            stmt.updatePermissionReplied.run(
-              p.reply ?? "unknown",
-              Date.now(),
-              p.requestID,
-            );
+            instrument("permission.replied", () => {
+              stmt.updatePermissionReplied.run(
+                p.reply ?? "unknown",
+                Date.now(),
+                p.requestID,
+              );
+            });
             return;
           case "file.edited":
-            stmt.insertFileEdit.run(p.file ?? "", Date.now());
+            instrument("file.edited", () => {
+              stmt.insertFileEdit.run(p.file ?? "", Date.now());
+            });
             return;
           case "command.executed":
-            stmt.insertCommand.run(
-              p.sessionID,
-              p.messageID ?? null,
-              p.name ?? "",
-              p.arguments ?? null,
-              Date.now(),
-            );
+            instrument("command.executed", () => {
+              stmt.insertCommand.run(
+                p.sessionID,
+                p.messageID ?? null,
+                p.name ?? "",
+                p.arguments ?? null,
+                Date.now(),
+              );
+            });
             return;
         }
       } catch (err) {
@@ -1363,18 +1398,20 @@ export const CommunicationLoggerPlugin: Plugin = async ({
 
     "chat.params": async (input, output) => {
       try {
-        stmt.insertChatParams.run(
-          input.sessionID,
-          input.agent ?? null,
-          input.provider?.info?.id ?? null,
-          input.model?.id ?? null,
-          output.temperature ?? null,
-          output.topP ?? null,
-          output.topK ?? null,
-          output.maxOutputTokens ?? null,
-          jsonOrNull(output.options),
-          Date.now(),
-        );
+        instrument("chat.params", () => {
+          stmt.insertChatParams.run(
+            input.sessionID,
+            input.agent ?? null,
+            input.provider?.info?.id ?? null,
+            input.model?.id ?? null,
+            output.temperature ?? null,
+            output.topP ?? null,
+            output.topK ?? null,
+            output.maxOutputTokens ?? null,
+            jsonOrNull(output.options),
+            Date.now(),
+          );
+        });
       } catch (err) {
         void log("warn", "chat.params capture failed", { error: String(err) });
       }
@@ -1382,9 +1419,14 @@ export const CommunicationLoggerPlugin: Plugin = async ({
 
     "experimental.chat.system.transform": async (input, output) => {
       try {
-        if (!input.sessionID) return;
+        const sessionID = input.sessionID;
+        if (!sessionID) return;
         const joined = (output.system ?? []).filter(Boolean).join("\n\n");
-        if (joined) stmt.setSessionSystemPrompt.run(joined, input.sessionID);
+        if (joined) {
+          instrument("experimental.chat.system.transform", () => {
+            stmt.setSessionSystemPrompt.run(joined, sessionID);
+          });
+        }
       } catch (err) {
         void log("warn", "system prompt capture failed", { error: String(err) });
       }
@@ -1392,13 +1434,15 @@ export const CommunicationLoggerPlugin: Plugin = async ({
 
     "tool.execute.before": async (input, output) => {
       try {
-        stmt.insertToolHookBefore.run(
-          input.callID,
-          input.sessionID,
-          input.tool,
-          jsonOrNull(output.args),
-          Date.now(),
-        );
+        instrument("tool.execute.before", () => {
+          stmt.insertToolHookBefore.run(
+            input.callID,
+            input.sessionID,
+            input.tool,
+            jsonOrNull(output.args),
+            Date.now(),
+          );
+        });
       } catch (err) {
         void log("warn", "tool.execute.before capture failed", { error: String(err) });
       }
@@ -1411,14 +1455,16 @@ export const CommunicationLoggerPlugin: Plugin = async ({
           .prepare("SELECT start_ts FROM tool_call_hooks WHERE call_id = ?")
           .get(input.callID) as { start_ts: number } | undefined;
         const duration = row?.start_ts ? end - row.start_ts : null;
-        stmt.updateToolHookAfter.run(
-          truncateString(safeStr(output.output)),
-          jsonOrNull(output.metadata),
-          output.title ?? null,
-          end,
-          duration,
-          input.callID,
-        );
+        instrument("tool.execute.after", () => {
+          stmt.updateToolHookAfter.run(
+            truncateString(safeStr(output.output)),
+            jsonOrNull(output.metadata),
+            output.title ?? null,
+            end,
+            duration,
+            input.callID,
+          );
+        });
       } catch (err) {
         void log("warn", "tool.execute.after capture failed", { error: String(err) });
       }
@@ -1740,16 +1786,36 @@ export const CommunicationLoggerPlugin: Plugin = async ({
 
           const tx = db.transaction(() => {
             const placeholders = ids.map(() => "?").join(",");
-            db.prepare(`DELETE FROM message_parts WHERE session_id IN (${placeholders})`).run(...ids);
-            db.prepare(`DELETE FROM messages WHERE session_id IN (${placeholders})`).run(...ids);
-            db.prepare(`DELETE FROM tool_call_hooks WHERE session_id IN (${placeholders})`).run(...ids);
-            db.prepare(`DELETE FROM chat_params WHERE session_id IN (${placeholders})`).run(...ids);
-            db.prepare(`DELETE FROM permissions WHERE session_id IN (${placeholders})`).run(...ids);
-            db.prepare(`DELETE FROM commands WHERE session_id IN (${placeholders})`).run(...ids);
-            db.prepare(`DELETE FROM session_diffs WHERE session_id IN (${placeholders})`).run(...ids);
-            db.prepare(`DELETE FROM session_quality WHERE session_id IN (${placeholders})`).run(...ids);
-            db.prepare(`DELETE FROM training_examples WHERE session_id IN (${placeholders})`).run(...ids);
-            db.prepare(`DELETE FROM sessions WHERE session_id IN (${placeholders})`).run(...ids);
+            instrument("prune:message_parts", () => {
+              db.prepare(`DELETE FROM message_parts WHERE session_id IN (${placeholders})`).run(...ids);
+            });
+            instrument("prune:messages", () => {
+              db.prepare(`DELETE FROM messages WHERE session_id IN (${placeholders})`).run(...ids);
+            });
+            instrument("prune:tool_call_hooks", () => {
+              db.prepare(`DELETE FROM tool_call_hooks WHERE session_id IN (${placeholders})`).run(...ids);
+            });
+            instrument("prune:chat_params", () => {
+              db.prepare(`DELETE FROM chat_params WHERE session_id IN (${placeholders})`).run(...ids);
+            });
+            instrument("prune:permissions", () => {
+              db.prepare(`DELETE FROM permissions WHERE session_id IN (${placeholders})`).run(...ids);
+            });
+            instrument("prune:commands", () => {
+              db.prepare(`DELETE FROM commands WHERE session_id IN (${placeholders})`).run(...ids);
+            });
+            instrument("prune:session_diffs", () => {
+              db.prepare(`DELETE FROM session_diffs WHERE session_id IN (${placeholders})`).run(...ids);
+            });
+            instrument("prune:session_quality", () => {
+              db.prepare(`DELETE FROM session_quality WHERE session_id IN (${placeholders})`).run(...ids);
+            });
+            instrument("prune:training_examples", () => {
+              db.prepare(`DELETE FROM training_examples WHERE session_id IN (${placeholders})`).run(...ids);
+            });
+            instrument("prune:sessions", () => {
+              db.prepare(`DELETE FROM sessions WHERE session_id IN (${placeholders})`).run(...ids);
+            });
           });
           tx();
 

@@ -1,0 +1,8 @@
+{
+  "sessionID": "session_test_123",
+  "callID": "call_tool_1",
+  "tool": "Execute",
+  "output": "total 40\ndrwxr-xr-x  10 nav  staff   320 May 28 19:21 .",
+  "status": "completed",
+  "timestamp": 1782348598000
+}

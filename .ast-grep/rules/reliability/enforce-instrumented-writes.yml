@@ -10,4 +10,4 @@ rule:
           pattern: instrument($NAME, () => { $$$BODY })
           stopBy: end
 message: "All database writes must be wrapped in `instrument` to monitor latency on the event hot path."
-severity: warning
+severity: error
