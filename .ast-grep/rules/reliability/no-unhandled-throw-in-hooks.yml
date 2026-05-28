@@ -1,0 +1,14 @@
+id: no-unhandled-throw-in-hooks
+category: reliability
+severity: error
+language: TypeScript
+message: "Never throw uncaught exceptions inside Codex hook files. Use silent try/catch and always exit with 0."
+rule:
+  all:
+    - pattern: throw $$$EXPR
+    - not:
+        inside:
+          pattern: try { $$$BODY } catch ($$$) { $$$ }
+          stopBy: end
+files:
+  - "src/hooks/**/*.ts"

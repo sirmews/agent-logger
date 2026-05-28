@@ -1,0 +1,9 @@
+{
+  "sessionID": "session_test_123",
+  "callID": "call_tool_1",
+  "tool": "Execute",
+  "args": {
+    "command": "ls -la"
+  },
+  "timestamp": 1782348590000
+}

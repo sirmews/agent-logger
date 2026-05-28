@@ -1,0 +1,10 @@
+{
+  "type": "task_complete",
+  "sessionID": "session_test_123",
+  "timestamp": 1782348610000,
+  "finishReason": "stop",
+  "lastResponse": {
+    "messageID": "msg_assistant_1",
+    "content": "The capital of France is Paris."
+  }
+}

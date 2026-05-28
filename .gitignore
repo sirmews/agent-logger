@@ -4,3 +4,4 @@ dist/
 *.db-journal
 *.db-wal
 .DS_Store
+.gemini-review/
