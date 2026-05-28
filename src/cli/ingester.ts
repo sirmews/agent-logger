@@ -2,6 +2,7 @@ import { Database } from "bun:sqlite";
 import * as fs from "fs";
 import * as readline from "readline";
 import { getIngestDb } from "./ingest-db";
+import { z } from "zod";
 
 /**
  * Local helper to satisfy instrumentation rules for database queries on the cold path.
@@ -21,17 +22,87 @@ function truncateString(s: string | null | undefined, max = 200000): string | nu
 
 /**
  * Ensures a placeholder session exists in codex_sessions to prevent foreign key violations.
+ * Gracefully updates the project path and agent name if they were previously initialized as placeholders.
  */
-function ensureSessionExists(db: Database, sessionId: string, timestamp: number, projectPath = "unknown") {
-  const existing = db.prepare("SELECT session_id FROM codex_sessions WHERE session_id = ?").get(sessionId);
+function ensureSessionExists(db: Database, sessionId: string, timestamp: number, projectPath = "unknown", agentName: string | null = null) {
+  const existing = db.prepare("SELECT session_id, project_path, agent_name FROM codex_sessions WHERE session_id = ?").get(sessionId) as any;
   if (!existing) {
-    instrument("ensureSessionExists", () => {
+    instrument("ensureSessionExists:insert", () => {
       db.prepare(`
-        INSERT INTO codex_sessions (session_id, project_path, start_time)
-        VALUES (?, ?, ?)
-      `).run(sessionId, projectPath, timestamp);
+        INSERT INTO codex_sessions (session_id, project_path, agent_name, start_time)
+        VALUES (?, ?, ?, ?)
+      `).run(sessionId, projectPath, agentName, timestamp);
     });
+  } else {
+    // If we have a real path or agent name but the stored one is 'unknown'/null, update it dynamically
+    const updatePath = projectPath !== "unknown" && existing.project_path === "unknown";
+    const updateAgent = agentName !== null && existing.agent_name === null;
+    if (updatePath || updateAgent) {
+      instrument("ensureSessionExists:update", () => {
+        db.prepare(`
+          UPDATE codex_sessions
+          SET project_path = COALESCE(NULLIF(?, 'unknown'), project_path),
+              agent_name = COALESCE(agent_name, ?)
+          WHERE session_id = ?
+        `).run(projectPath, agentName, sessionId);
+      });
+    }
   }
+}
+
+/**
+ * Declarative Schema for multi-provider telemetry events.
+ * Resolves standard fallback schemas to handle both Claude Code and Codex CLI formats seamlessly.
+ */
+const TelemetryPayloadSchema = z.object({
+  event: z.string().optional(),
+  hook_event_name: z.string().optional(),
+  sessionID: z.string().optional(),
+  session_id: z.string().optional(),
+  timestamp: z.number().optional(),
+  localTimestamp: z.number().optional(),
+  cwd: z.string().optional(),
+  projectPath: z.string().optional(),
+  project_path: z.string().optional(),
+  agentName: z.string().optional(),
+  agent_name: z.string().optional(),
+  agent: z.string().optional(),
+  source: z.string().optional(),
+}).passthrough();
+
+export interface NormalizedEvent {
+  eventName: string;
+  sessionId: string;
+  timestamp: number;
+  projectPath: string;
+  agentName: string | null;
+  payload: any;
+}
+
+/**
+ * Normalizes raw payload fields into a unified schema contract.
+ */
+export function normalizeEvent(raw: any): NormalizedEvent | null {
+  const result = TelemetryPayloadSchema.safeParse(raw);
+  if (!result.success) return null;
+
+  const data = result.data;
+  const eventName = data.event ?? data.hook_event_name;
+  if (!eventName) return null;
+
+  const sessionId = data.sessionID ?? data.session_id ?? "unknown";
+  const timestamp = data.timestamp ?? data.localTimestamp ?? Date.now();
+  const projectPath = data.projectPath ?? data.cwd ?? data.project_path ?? "unknown";
+  const agentName = data.agentName ?? data.agent_name ?? data.agent ?? data.source ?? null;
+
+  return {
+    eventName,
+    sessionId,
+    timestamp,
+    projectPath,
+    agentName,
+    payload: raw,
+  };
 }
 
 /**
@@ -48,11 +119,15 @@ export async function ingestTelemetry(bufferPath: string, db: Database): Promise
     crlfDelay: Infinity,
   });
 
-  const events: any[] = [];
+  const events: NormalizedEvent[] = [];
   for await (const line of rl) {
     if (!line.trim()) continue;
     try {
-      events.push(JSON.parse(line));
+      const parsed = JSON.parse(line);
+      const normalized = normalizeEvent(parsed);
+      if (normalized) {
+        events.push(normalized);
+      }
     } catch (e) {
       // Ignore malformed JSON lines
     }
@@ -60,16 +135,11 @@ export async function ingestTelemetry(bufferPath: string, db: Database): Promise
 
   // Process all telemetry events sequentially inside a single transaction for speed/isolation
   db.transaction(() => {
-    for (const payload of events) {
-      const eventName = payload.event ?? payload.hook_event_name;
-      if (!eventName) continue;
+    for (const { eventName, sessionId, timestamp, projectPath, agentName, payload } of events) {
+      // 1. Maintain parent session row and update metadata dynamically across events
+      ensureSessionExists(db, sessionId, timestamp, projectPath, agentName);
 
       if (eventName === "SessionStart") {
-        const sessionId = payload.sessionID ?? payload.session_id;
-        if (!sessionId) continue;
-        const projectPath = payload.projectPath ?? payload.cwd ?? payload.project_path ?? "unknown";
-        const agentName = payload.agentName ?? payload.agent_name ?? payload.agent ?? payload.source ?? null;
-
         let modelProvider: string | null = null;
         let modelId: string | null = null;
         if (payload.model) {
@@ -89,30 +159,19 @@ export async function ingestTelemetry(bufferPath: string, db: Database): Promise
         if (!modelProvider) modelProvider = payload.model_provider ?? null;
         if (!modelId) modelId = payload.model_id ?? null;
 
-        const startTime = payload.timestamp ?? payload.localTimestamp ?? Date.now();
-
         instrument("SessionStart", () => {
           db.prepare(`
-            INSERT INTO codex_sessions (session_id, project_path, agent_name, model_provider, model_id, start_time)
-            VALUES (?, ?, ?, ?, ?, ?)
-            ON CONFLICT(session_id) DO UPDATE SET
-              project_path = excluded.project_path,
-              agent_name = COALESCE(excluded.agent_name, codex_sessions.agent_name),
-              model_provider = COALESCE(excluded.model_provider, codex_sessions.model_provider),
-              model_id = COALESCE(excluded.model_id, codex_sessions.model_id),
-              start_time = excluded.start_time
-          `).run(sessionId, projectPath, agentName, modelProvider, modelId, startTime);
+            UPDATE codex_sessions
+            SET model_provider = COALESCE(?, model_provider),
+                model_id = COALESCE(?, model_id)
+            WHERE session_id = ?
+          `).run(modelProvider, modelId, sessionId);
         });
 
       } else if (eventName === "UserPromptSubmit") {
-        const sessionId = payload.sessionID ?? payload.session_id;
-        if (!sessionId) continue;
         const messageId = payload.messageID ?? payload.message_id ?? payload.turn_id;
         if (!messageId) continue;
         const prompt = payload.prompt ?? payload.content ?? "";
-        const timestamp = payload.timestamp ?? payload.localTimestamp ?? Date.now();
-
-        ensureSessionExists(db, sessionId, timestamp);
 
         instrument("UserPromptSubmit", () => {
           db.prepare(`
@@ -125,16 +184,11 @@ export async function ingestTelemetry(bufferPath: string, db: Database): Promise
         });
 
       } else if (eventName === "PreToolUse") {
-        const sessionId = payload.sessionID ?? payload.session_id;
-        if (!sessionId) continue;
         const callId = payload.callID ?? payload.call_id ?? payload.tool_use_id;
         if (!callId) continue;
         const toolName = payload.tool ?? payload.tool_name ?? "";
         const args = payload.args ?? payload.tool_input ?? null;
         const inputArgs = args ? (typeof args === "string" ? args : JSON.stringify(args)) : null;
-        const startTime = payload.timestamp ?? payload.localTimestamp ?? Date.now();
-
-        ensureSessionExists(db, sessionId, startTime);
 
         instrument("PreToolUse", () => {
           db.prepare(`
@@ -144,20 +198,15 @@ export async function ingestTelemetry(bufferPath: string, db: Database): Promise
               tool_name = excluded.tool_name,
               input_args = COALESCE(excluded.input_args, codex_tool_calls.input_args),
               start_time = excluded.start_time
-          `).run(callId, sessionId, toolName, inputArgs, startTime);
+          `).run(callId, sessionId, toolName, inputArgs, timestamp);
         });
 
       } else if (eventName === "PostToolUse") {
-        const sessionId = payload.sessionID ?? payload.session_id;
         const callId = payload.callID ?? payload.call_id ?? payload.tool_use_id;
         if (!callId) continue;
         const toolName = payload.tool ?? payload.tool_name ?? "";
         const toolResponse = payload.output ?? payload.tool_response ?? null;
         const status = payload.status ?? "completed";
-        const timestamp = payload.timestamp ?? payload.localTimestamp ?? Date.now();
-
-        const resolvedSessionId = sessionId || "unknown";
-        ensureSessionExists(db, resolvedSessionId, timestamp);
 
         const existing = db.prepare("SELECT start_time FROM codex_tool_calls WHERE call_id = ?").get(callId) as { start_time: number } | undefined;
         let durationMs: number | null = null;
@@ -172,7 +221,7 @@ export async function ingestTelemetry(bufferPath: string, db: Database): Promise
             db.prepare(`
               INSERT INTO codex_tool_calls (call_id, session_id, tool_name, output, status, end_time, duration_ms)
               VALUES (?, ?, ?, ?, ?, ?, ?)
-            `).run(callId, resolvedSessionId, toolName || "unknown", truncatedOutput, status, timestamp, durationMs);
+            `).run(callId, sessionId, toolName || "unknown", truncatedOutput, status, timestamp, durationMs);
           });
         } else {
           instrument("PostToolUse:update", () => {
@@ -185,12 +234,7 @@ export async function ingestTelemetry(bufferPath: string, db: Database): Promise
         }
 
       } else if (eventName === "Stop") {
-        const sessionId = payload.sessionID ?? payload.session_id;
-        if (!sessionId) continue;
-        const timestamp = payload.timestamp ?? payload.localTimestamp ?? Date.now();
         const finishReason = payload.finishReason ?? payload.finish_reason ?? null;
-
-        ensureSessionExists(db, sessionId, timestamp);
 
         instrument("Stop:session", () => {
           db.prepare(`

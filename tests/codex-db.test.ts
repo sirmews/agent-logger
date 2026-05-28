@@ -262,4 +262,51 @@ describe("Codex Ingester & DB Structuring Tests", () => {
 
     db.close();
   });
+
+  test("Ingest and normalize heterogeneous multi-provider payloads (Claude Code vs Codex formats)", async () => {
+    const trajectory = [
+      // 1. Claude Code formatted PreToolUse
+      {
+        hook_event_name: "PreToolUse",
+        session_id: "sess_multi_provider",
+        cwd: "/Users/nav/Projects/claude-app",
+        tool_name: "Bash",
+        tool_input: { command: "mkdir src" },
+        tool_use_id: "call_claude_123",
+        timestamp: 1000,
+      },
+      // 2. Codex formatted PostToolUse (different keys, same session/tool)
+      {
+        event: "PostToolUse",
+        sessionID: "sess_multi_provider",
+        callID: "call_claude_123",
+        tool: "Bash",
+        output: "Created src",
+        status: "completed",
+        timestamp: 1500,
+      }
+    ];
+
+    const lines = trajectory.map((event) => JSON.stringify(event)).join("\n");
+    fs.writeFileSync(TEST_BUFFER_PATH, lines);
+
+    const db = getIngestDb(TEST_DB_PATH);
+    await ingestTelemetry(TEST_BUFFER_PATH, db);
+
+    // Verify unified session
+    const session = db.prepare("SELECT * FROM codex_sessions WHERE session_id = ?").get("sess_multi_provider") as any;
+    expect(session).toBeDefined();
+    expect(session.project_path).toBe("/Users/nav/Projects/claude-app");
+
+    // Verify tool call was seamlessly joined across providers
+    const toolCall = db.prepare("SELECT * FROM codex_tool_calls WHERE call_id = ?").get("call_claude_123") as any;
+    expect(toolCall).toBeDefined();
+    expect(toolCall.tool_name).toBe("Bash");
+    expect(JSON.parse(toolCall.input_args).command).toBe("mkdir src");
+    expect(toolCall.output).toBe("Created src");
+    expect(toolCall.status).toBe("completed");
+    expect(toolCall.duration_ms).toBe(500); // 1500 - 1000
+
+    db.close();
+  });
 });
