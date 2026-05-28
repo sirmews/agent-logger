@@ -70,5 +70,8 @@
   },
   "trustedDependencies": [
     "@ast-grep/cli"
-  ]
+  ],
+  "dependencies": {
+    "zod": "^4.4.3"
+  }
 }
