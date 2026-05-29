@@ -1,0 +1,61 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ./dist/hooks/session.js --start",
+            "timeoutSec": 5
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ./dist/hooks/message.js --prompt",
+            "timeoutSec": 5
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "^(Write|Edit|MultiEdit|Bash|Execute)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ./dist/hooks/tool.js --before",
+            "timeoutSec": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "^(Write|Edit|MultiEdit|Bash|Execute)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ./dist/hooks/tool.js --after",
+            "timeoutSec": 5
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ./dist/hooks/session.js --stop",
+            "timeoutSec": 5
+          }
+        ]
+      }
+    ]
+  }
+}
