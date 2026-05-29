@@ -63,6 +63,14 @@ export function getIngestDb(dbPath: string): Database {
         FOREIGN KEY(session_id) REFERENCES codex_sessions(session_id) ON DELETE CASCADE
       );
     `);
+
+    db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_codex_messages_session ON codex_messages(session_id);
+    `);
+
+    db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_codex_tool_calls_session ON codex_tool_calls(session_id);
+    `);
   })();
 
   return db;

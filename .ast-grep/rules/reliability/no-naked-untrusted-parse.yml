@@ -1,0 +1,20 @@
+id: no-naked-untrusted-parse
+category: reliability
+severity: warning
+language: TypeScript
+message: "Naked `parseFloat` or `parseInt` on untrusted parameters can yield NaN, causing silent comparison failures. Wrap them in a helper that enforces finite fallbacks."
+rule:
+  all:
+    - any:
+        - pattern: "parseFloat($$$)"
+        - pattern: "parseInt($$$)"
+    - not:
+        inside:
+          pattern: "function toFiniteFloat($$$): $RET { $$$ }"
+          stopBy: end
+    - not:
+        inside:
+          pattern: "function toFiniteInt($$$): $RET { $$$ }"
+          stopBy: end
+files:
+  - "src/cli/**/*.ts"
