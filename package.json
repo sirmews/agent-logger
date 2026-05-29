@@ -16,7 +16,7 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsc --project tsconfig.build.json",
+    "build": "tsc --project tsconfig.build.json && bun scripts/build-hooks.ts",
     "typecheck": "tsc --noEmit",
     "dev": "tsc --project tsconfig.build.json --watch",
     "test": "bun test",
@@ -62,6 +62,7 @@
     "@opencode-ai/plugin": "latest",
     "@types/node": "^22.10.6",
     "bun-types": "latest",
+    "esbuild": "^0.28.0",
     "eslint": "^10.2.1",
     "eslint-plugin-jsdoc": "^62.9.0",
     "standard-version": "^9.5.0",

@@ -15,12 +15,6 @@ describe("Codex Hook Commands Protocol Verification", () => {
     }
     // Compile using the build script
     execSync("bun run build", { stdio: "inherit" });
-
-    // Copy dist/src/hooks to dist/hooks to match the spec path expectation
-    const fs = require("fs");
-    if (fs.existsSync("dist/src/hooks")) {
-      fs.cpSync("dist/src/hooks", "dist/hooks", { recursive: true });
-    }
   });
 
   // Clear test buffer before each test to isolate states and allow independent runs
