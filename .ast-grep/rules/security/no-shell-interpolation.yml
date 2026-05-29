@@ -1,0 +1,23 @@
+id: no-shell-interpolation
+category: security
+severity: error
+language: TypeScript
+message: "Never pass interpolated string templates or variables into shell-spawning commands (like `execSync`). Use `execFileSync` with array arguments to prevent shell injection."
+rule:
+  all:
+    - any:
+        - pattern: "execSync($$$)"
+        - pattern: "exec($$$)"
+    - not:
+        any:
+          - pattern: "execSync('$STR')"
+          - pattern: "execSync(\"$STR\")"
+          - pattern: "execSync('$STR', $$$ARGS)"
+          - pattern: "execSync(\"$STR\", $$$ARGS)"
+          - pattern: "exec('$STR')"
+          - pattern: "exec(\"$STR\")"
+          - pattern: "exec('$STR', $$$ARGS)"
+          - pattern: "exec(\"$STR\", $$$ARGS)"
+files:
+  - "src/**/*.ts"
+  - "tests/**/*.ts"

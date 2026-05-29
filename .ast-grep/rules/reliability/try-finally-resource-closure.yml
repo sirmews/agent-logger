@@ -1,0 +1,37 @@
+id: try-finally-resource-closure
+category: reliability
+severity: error
+language: TypeScript
+message: "Resource instantiations (like `new Database()`) must be enclosed within a `try...finally` block to guarantee `.close()` is executed on all error paths."
+rule:
+  all:
+    - pattern: "const $DB = new Database($$$)"
+    - not:
+        inside:
+          any:
+            - pattern: |
+                function $FUNC($$$): $RET {
+                  $$$PRE
+                  const $DB = new Database($$$);
+                  try {
+                    $$$BODY
+                  } finally {
+                    $DB.close();
+                  }
+                  $$$POST
+                }
+            - pattern: |
+                async function $FUNC($$$): $RET {
+                  $$$PRE
+                  const $DB = new Database($$$);
+                  try {
+                    $$$BODY
+                  } finally {
+                    $DB.close();
+                  }
+                  $$$POST
+                }
+          stopBy: end
+files:
+  - "src/cli/export.ts"
+  - "src/cli/ingester.ts"
