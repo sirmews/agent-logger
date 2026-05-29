@@ -144,4 +144,19 @@ describe("Codex Export CLI", () => {
     expect(userMsg.content).toContain("<<REDACTED_CUSTOM_001>>");
     expect(userMsg.content).toContain("<<REDACTED_BEARER_001>>");
   });
+
+  test("Parser handles invalid non-numeric flags with safe fallback values", () => {
+    const { parseArgs } = require("../src/cli/export");
+    const parsed = parseArgs([
+      "--db", "my.db",
+      "--output", "out.jsonl",
+      "--min-efficiency", "invalid-float",
+      "--min-quality-score", "invalid-float",
+      "--limit", "invalid-int"
+    ]);
+
+    expect(parsed.minEfficiency).toBe(0.0);
+    expect(parsed.minQualityScore).toBe(0.0);
+    expect(parsed.limit).toBe(50);
+  });
 });

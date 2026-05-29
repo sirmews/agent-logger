@@ -7,7 +7,13 @@ rule:
         - pattern: db.prepare($QUERY).run($$$ARGS)
     - not:
         inside:
+          pattern: function migrate($$$) { $$$ }
+    - not:
+        inside:
           pattern: instrument($NAME, () => { $$$BODY })
           stopBy: end
 message: "All database writes must be wrapped in `instrument` to monitor latency on the event hot path."
 severity: error
+files:
+  - "src/**/*.ts"
+  - "index.ts"

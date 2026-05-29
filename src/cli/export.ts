@@ -20,6 +20,35 @@ interface ExportArgs {
   limit: number;
 }
 
+/**
+ * Safe parser for finite floats.
+ * @param v - Input string value.
+ * @param fallback - Fallback number if non-numeric or infinite.
+ * @returns The parsed float or fallback.
+ */
+function toFiniteFloat(v: string | undefined, fallback: number): number {
+  if (v === undefined) return fallback;
+  const n = parseFloat(v);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+/**
+ * Safe parser for finite integers.
+ * @param v - Input string value.
+ * @param fallback - Fallback number if non-numeric or infinite.
+ * @returns The parsed integer or fallback.
+ */
+function toFiniteInt(v: string | undefined, fallback: number): number {
+  if (v === undefined) return fallback;
+  const n = parseInt(v, 10);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+/**
+ * Parses CLI string arguments into structured ExportArgs options.
+ * @param args - Array of CLI arguments.
+ * @returns The parsed arguments.
+ */
 export function parseArgs(args: string[]): ExportArgs {
   let dbPath: string | null = null;
   let outputPath: string | null = null;
@@ -40,17 +69,17 @@ export function parseArgs(args: string[]): ExportArgs {
     } else if (arg.startsWith("--output=")) {
       outputPath = arg.substring(9);
     } else if (arg === "--min-efficiency") {
-      minEfficiency = parseFloat(args[++i] ?? "0.0");
+      minEfficiency = toFiniteFloat(args[++i], 0.0);
     } else if (arg.startsWith("--min-efficiency=")) {
-      minEfficiency = parseFloat(arg.substring(17));
+      minEfficiency = toFiniteFloat(arg.substring(17), 0.0);
     } else if (arg === "--quality-profile") {
       qualityProfile = args[++i] ?? "default";
     } else if (arg.startsWith("--quality-profile=")) {
       qualityProfile = arg.substring(18);
     } else if (arg === "--min-quality-score") {
-      minQualityScore = parseFloat(args[++i] ?? "0.0");
+      minQualityScore = toFiniteFloat(args[++i], 0.0);
     } else if (arg.startsWith("--min-quality-score=")) {
-      minQualityScore = parseFloat(arg.substring(20));
+      minQualityScore = toFiniteFloat(arg.substring(20), 0.0);
     } else if (arg === "--redact") {
       const nextVal = args[i + 1];
       if (nextVal === "false") {
@@ -65,9 +94,9 @@ export function parseArgs(args: string[]): ExportArgs {
     } else if (arg.startsWith("--redact=")) {
       redact = arg.substring(9) !== "false";
     } else if (arg === "--limit") {
-      limit = parseInt(args[++i] ?? "50", 10);
+      limit = toFiniteInt(args[++i], 50);
     } else if (arg.startsWith("--limit=")) {
-      limit = parseInt(arg.substring(8), 10);
+      limit = toFiniteInt(arg.substring(8), 50);
     }
   }
 
@@ -82,6 +111,11 @@ export function parseArgs(args: string[]): ExportArgs {
   };
 }
 
+/**
+ * Runs the SFT export process by reading and evaluating sessions from a SQLite DB.
+ * @param args - Parsed ExportArgs configuration.
+ * @returns A promise resolving on completion.
+ */
 export async function runExport(args: ExportArgs): Promise<void> {
   if (!args.dbPath) {
     throw new Error("Missing required argument: --db <dbPath>");
