@@ -1,6 +1,6 @@
 import { describe, expect, test, beforeEach, afterEach } from "bun:test";
 import { getIngestDb } from "../src/cli/ingest-db";
-import { execSync } from "child_process";
+import { execSync, execFileSync } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
 
@@ -88,7 +88,7 @@ describe("Codex Export CLI", () => {
     db.close();
 
     // 2. Run exporter CLI with --min-quality-score 0.7
-    execSync(`bun src/cli/export.ts --db ${TEST_DB_PATH} --output ${TEST_OUTPUT_PATH} --min-quality-score 0.7`, {
+    execFileSync("bun", ["src/cli/export.ts", "--db", TEST_DB_PATH, "--output", TEST_OUTPUT_PATH, "--min-quality-score", "0.7"], {
       encoding: "utf-8",
     });
 
@@ -112,7 +112,7 @@ describe("Codex Export CLI", () => {
 
     // Set AGENT_LOGGER_EXTRA_REDACTION_PATTERNS to match sk-ant- keys
     const extraPatterns = "sk-ant-[a-zA-Z0-9]+";
-    execSync(`bun src/cli/export.ts --db ${TEST_DB_PATH} --output ${TEST_OUTPUT_PATH} --min-quality-score 0.0`, {
+    execFileSync("bun", ["src/cli/export.ts", "--db", TEST_DB_PATH, "--output", TEST_OUTPUT_PATH, "--min-quality-score", "0.0"], {
       encoding: "utf-8",
       env: {
         ...process.env,
