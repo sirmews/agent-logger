@@ -1,0 +1,15 @@
+{
+  "name": "codex-communication-logger",
+  "version": "1.0.0",
+  "description": "Telemetry and training corpus logger for Codex CLI",
+  "author": {
+    "name": "Developer"
+  },
+  "hooks": "./hooks.json",
+  "interface": {
+    "displayName": "Codex Telemetry Logger",
+    "shortDescription": "Ensures every local action is structured and logged safely.",
+    "category": "Developer Tools",
+    "capabilities": ["Interactive", "Write"]
+  }
+}
