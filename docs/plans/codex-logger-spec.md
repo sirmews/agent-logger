@@ -244,7 +244,7 @@ To confirm correctness without executing a full instance of Codex CLI, write loc
 
 ## 5. Codex Plugin Manifest Configuration
 
-To register the hooks with Codex CLI, bundle them into `.codex-plugin/plugin.json`:
+To register the logger with Codex CLI, keep presentation metadata in `.codex-plugin/plugin.json` and expose hook commands through `hooks/hooks.json`:
 
 ```json
 {
@@ -252,19 +252,23 @@ To register the hooks with Codex CLI, bundle them into `.codex-plugin/plugin.jso
   "version": "1.0.0",
   "description": "Telemetry and training corpus logger for Codex CLI",
   "author": {
-    "name": "Developer"
+    "name": "Nav"
   },
-  "hooks": "./hooks.json",
   "interface": {
     "displayName": "Codex Telemetry Logger",
     "shortDescription": "Ensures every local action is structured and logged safely.",
+    "longDescription": "Captures Codex session, prompt, tool, and stop events through low-latency hooks, then writes them to a local telemetry buffer for offline ingestion and export.",
+    "developerName": "Nav",
     "category": "Developer Tools",
-    "capabilities": ["Interactive", "Write"]
+    "capabilities": ["Interactive", "Write"],
+    "defaultPrompt": [
+      "Check whether Codex telemetry is being captured."
+    ]
   }
 }
 ```
 
-The accompanying `hooks.json` links Codex's lifecycle handlers directly to our compiled, lightweight CLI entrypoints and registers standard regex filters on tool tools to minimize latency.
+The accompanying `hooks/hooks.json` links Codex's lifecycle handlers directly to our compiled, lightweight CLI entrypoints and registers standard regex filters on tool tools to minimize latency.
 
 ```json
 {
@@ -505,7 +509,7 @@ To confirm correctness without executing a full instance of Codex CLI, write loc
 
 ## 5. Codex Plugin Manifest Configuration
 
-To register the hooks with Codex CLI, bundle them into `.codex-plugin/plugin.json`:
+To register the logger with Codex CLI, keep presentation metadata in `.codex-plugin/plugin.json` and expose hook commands through `hooks/hooks.json`:
 
 ```json
 {
@@ -513,19 +517,23 @@ To register the hooks with Codex CLI, bundle them into `.codex-plugin/plugin.jso
   "version": "1.0.0",
   "description": "Telemetry and training corpus logger for Codex CLI",
   "author": {
-    "name": "Developer"
+    "name": "Nav"
   },
-  "hooks": "./hooks.json",
   "interface": {
     "displayName": "Codex Telemetry Logger",
     "shortDescription": "Ensures every local action is structured and logged safely.",
+    "longDescription": "Captures Codex session, prompt, tool, and stop events through low-latency hooks, then writes them to a local telemetry buffer for offline ingestion and export.",
+    "developerName": "Nav",
     "category": "Developer Tools",
-    "capabilities": ["Interactive", "Write"]
+    "capabilities": ["Interactive", "Write"],
+    "defaultPrompt": [
+      "Check whether Codex telemetry is being captured."
+    ]
   }
 }
 ```
 
-The accompanying `hooks.json` links Codex's lifecycle handlers directly to our compiled, lightweight CLI entrypoints and registers standard regex filters on tool tools to minimize latency.
+The accompanying `hooks/hooks.json` links Codex's lifecycle handlers directly to our compiled, lightweight CLI entrypoints and registers standard regex filters on tool tools to minimize latency.
 
 ```json
 {
@@ -764,7 +772,7 @@ To confirm correctness without executing a full instance of Codex CLI, write loc
 
 ## 5. Codex Plugin Manifest Configuration
 
-To register the hooks with Codex CLI, bundle them into `.codex-plugin/plugin.json`:
+To register the logger with Codex CLI, keep presentation metadata in `.codex-plugin/plugin.json` and expose hook commands through `hooks/hooks.json`:
 
 ```json
 {
@@ -772,19 +780,23 @@ To register the hooks with Codex CLI, bundle them into `.codex-plugin/plugin.jso
   "version": "1.0.0",
   "description": "Telemetry and training corpus logger for Codex CLI",
   "author": {
-    "name": "Developer"
+    "name": "Nav"
   },
-  "hooks": "./hooks.json",
   "interface": {
     "displayName": "Codex Telemetry Logger",
     "shortDescription": "Ensures every local action is structured and logged safely.",
+    "longDescription": "Captures Codex session, prompt, tool, and stop events through low-latency hooks, then writes them to a local telemetry buffer for offline ingestion and export.",
+    "developerName": "Nav",
     "category": "Developer Tools",
-    "capabilities": ["Interactive", "Write"]
+    "capabilities": ["Interactive", "Write"],
+    "defaultPrompt": [
+      "Check whether Codex telemetry is being captured."
+    ]
   }
 }
 ```
 
-The accompanying `hooks.json` links Codex's lifecycle handlers directly to our compiled, lightweight CLI entrypoints and registers standard regex filters on tool tools to minimize latency.
+The accompanying `hooks/hooks.json` links Codex's lifecycle handlers directly to our compiled, lightweight CLI entrypoints and registers standard regex filters on tool tools to minimize latency.
 
 ```json
 {

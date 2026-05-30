@@ -1,15 +1,19 @@
 {
   "name": "codex-communication-logger",
-  "version": "1.0.0",
+  "version": "1.0.0+codex.local-20260530-224732",
   "description": "Telemetry and training corpus logger for Codex CLI",
   "author": {
-    "name": "Developer"
+    "name": "Nav"
   },
-  "hooks": "./hooks.json",
   "interface": {
     "displayName": "Codex Telemetry Logger",
     "shortDescription": "Ensures every local action is structured and logged safely.",
+    "longDescription": "Captures Codex session, prompt, tool, and stop events through low-latency hooks, then writes them to a local telemetry buffer for offline ingestion and export.",
+    "developerName": "Nav",
     "category": "Developer Tools",
-    "capabilities": ["Interactive", "Write"]
+    "capabilities": ["Interactive", "Write"],
+    "defaultPrompt": [
+      "Check whether Codex telemetry is being captured."
+    ]
   }
 }

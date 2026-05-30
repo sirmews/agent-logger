@@ -67,7 +67,7 @@ This document outlines the systematic, phased roadmap for implementing the **Cod
 
 2. **Publish Manifest Declarations:**
    * Build `.codex-plugin/plugin.json` containing rich presentation metadata.
-   * Create `hooks.json` specifying exact regex matchers (e.g., `^(Write|Edit|MultiEdit|Bash|Execute)$`) to limit tool hooks to high-value, slow tasks and prevent overhead on fast actions.
+   * Create `hooks/hooks.json` specifying exact regex matchers (e.g., `^(Write|Edit|MultiEdit|Bash|Execute)$`) to limit tool hooks to high-value, slow tasks and prevent overhead on fast actions.
 
 3. **Local Ingestion Test:**
    * Register the plugin in Codex’s local `marketplace.json` configuration and run a real Codex turn to confirm end-to-end event writing.

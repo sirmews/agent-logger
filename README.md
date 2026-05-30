@@ -47,7 +47,7 @@ When Codex fires a hook event, the lightweight Node.js hook scripts (`src/hooks/
 * **Storage Discipline:** The hooks never connect to SQLite. Instead, they read raw stdin, add event metadata, and atomically append to a raw telemetry buffer file (`O_APPEND` write) returning control to Codex in **under 3ms**.
 * **Buffer Path:** `~/.local/share/codex/telemetry-buffer.jsonl` (POSIX) or `%APPDATA%\codex\telemetry-buffer.jsonl` (Windows). Override with `CODEX_TELEMETRY_BUFFER_PATH`.
 * **Fail-Safe Integrity:** All hook entrypoints wrap database and file operations in `try...catch` blocks. If file access fails, they silently print `{"continue": true}` and exit with `0`—ensuring telemetry never interrupts Codex.
-* **Matcher Optimization:** Hooks use `matcher` regex filters in `hooks.json` (e.g., `^(Write|Edit|MultiEdit|Bash|Execute)$`) to run tool hooks exclusively on slow, heavyweight operations, preventing startup overhead on fast transient actions.
+* **Matcher Optimization:** Hooks use `matcher` regex filters in `hooks/hooks.json` (e.g., `^(Write|Edit|MultiEdit|Bash|Execute)$`) to run tool hooks exclusively on slow, heavyweight operations, preventing startup overhead on fast transient actions.
 
 ### 2. The Cold Path (Offline Ingesting & Export)
 During the offline phase (triggered on-demand or during export), an ingester parses the `.jsonl` log buffer, reconciles user-assistant turns (pairing prompts with completions and tool calls), and populates a normalized SQLite database.
