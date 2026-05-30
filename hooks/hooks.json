@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ./dist/hooks/session.js --start",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/dist/hooks/session.js\" --start",
             "timeoutSec": 5
           }
         ]
@@ -16,7 +16,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ./dist/hooks/message.js --prompt",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/dist/hooks/message.js\" --prompt",
             "timeoutSec": 5
           }
         ]
@@ -28,7 +28,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ./dist/hooks/tool.js --before",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/dist/hooks/tool.js\" --before",
             "timeoutSec": 5
           }
         ]
@@ -40,7 +40,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ./dist/hooks/tool.js --after",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/dist/hooks/tool.js\" --after",
             "timeoutSec": 5
           }
         ]
@@ -51,7 +51,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ./dist/hooks/session.js --stop",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/dist/hooks/session.js\" --stop",
             "timeoutSec": 5
           }
         ]
