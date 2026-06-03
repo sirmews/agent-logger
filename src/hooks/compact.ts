@@ -4,9 +4,10 @@ import { createEnvelope } from './utils/envelope.js';
 
 function main() {
   try {
-    const isPrompt = process.argv.includes('--prompt');
+    const isPre = process.argv.includes('--pre');
+    const isPost = process.argv.includes('--post');
 
-    if (!isPrompt) {
+    if (!isPre && !isPost) {
       console.log(JSON.stringify({ continue: true }));
       process.exit(0);
     }
@@ -21,12 +22,13 @@ function main() {
       }
     }
 
-    const eventName = 'UserPromptSubmit';
     const cwd = (payload.cwd ?? process.cwd()) as string;
+    const turnId = (payload.turn_id ?? null) as string | null;
+    const eventName = isPre ? 'PreCompact' : 'PostCompact';
 
     const normalized: Record<string, unknown> = {
-      message_id: payload.messageID ?? payload.message_id ?? payload.turn_id ?? null,
-      prompt: payload.prompt ?? payload.content ?? null,
+      turn_id: turnId,
+      reason: payload.reason ?? null,
     };
 
     const envelope = createEnvelope({
@@ -35,7 +37,7 @@ function main() {
       raw: payload,
       normalized,
       session_id: (payload.sessionID ?? payload.session_id) as string | null,
-      turn_id: (payload.turn_id ?? payload.turnID) as string | null,
+      turn_id: turnId,
       cwd,
       transcript_path: payload.transcript_path as string | null,
     });

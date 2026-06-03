@@ -1,11 +1,9 @@
 {
-  "type": "task_started",
   "sessionID": "session_test_123",
   "timestamp": 1782348574000,
-  "projectPath": "/Users/nav/Projects/my-app",
-  "agentName": "test-agent",
-  "model": {
-    "provider": "openai",
-    "modelID": "gpt-4"
-  }
+  "cwd": "/Users/nav/Projects/my-app",
+  "model": "gpt-5.4",
+  "permission_mode": "default",
+  "source": "startup",
+  "transcript_path": "/tmp/codex-transcripts/session_test_123.jsonl"
 }

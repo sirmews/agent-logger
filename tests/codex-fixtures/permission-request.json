@@ -1,0 +1,11 @@
+{
+  "sessionID": "session_test_123",
+  "tool_name": "Bash",
+  "tool_input": { "command": "rm -rf /tmp/test" },
+  "turn_id": "turn_2",
+  "permission_mode": "default",
+  "agent_id": "agent_main",
+  "agent_type": "codex-developer",
+  "cwd": "/Users/nav/Projects/my-app",
+  "transcript_path": "/tmp/codex-transcripts/session_test_123.jsonl"
+}

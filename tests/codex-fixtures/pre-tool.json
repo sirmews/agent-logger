@@ -1,9 +1,12 @@
 {
   "sessionID": "session_test_123",
   "callID": "call_tool_1",
-  "tool": "Execute",
+  "tool": "Bash",
+  "turn_id": "turn_1",
   "args": {
     "command": "ls -la"
   },
-  "timestamp": 1782348590000
+  "timestamp": 1782348590000,
+  "cwd": "/Users/nav/Projects/my-app",
+  "transcript_path": "/tmp/codex-transcripts/session_test_123.jsonl"
 }

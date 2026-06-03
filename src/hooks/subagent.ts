@@ -4,9 +4,10 @@ import { createEnvelope } from './utils/envelope.js';
 
 function main() {
   try {
-    const isPrompt = process.argv.includes('--prompt');
+    const isStart = process.argv.includes('--start');
+    const isStop = process.argv.includes('--stop');
 
-    if (!isPrompt) {
+    if (!isStart && !isStop) {
       console.log(JSON.stringify({ continue: true }));
       process.exit(0);
     }
@@ -21,12 +22,13 @@ function main() {
       }
     }
 
-    const eventName = 'UserPromptSubmit';
     const cwd = (payload.cwd ?? process.cwd()) as string;
+    const eventName = isStart ? 'SubagentStart' : 'SubagentStop';
 
     const normalized: Record<string, unknown> = {
-      message_id: payload.messageID ?? payload.message_id ?? payload.turn_id ?? null,
-      prompt: payload.prompt ?? payload.content ?? null,
+      subagent_id: payload.subagent_id ?? null,
+      parent_turn_id: payload.parent_turn_id ?? payload.turn_id ?? null,
+      agent_type: payload.agent_type ?? null,
     };
 
     const envelope = createEnvelope({
@@ -35,7 +37,7 @@ function main() {
       raw: payload,
       normalized,
       session_id: (payload.sessionID ?? payload.session_id) as string | null,
-      turn_id: (payload.turn_id ?? payload.turnID) as string | null,
+      turn_id: (payload.turn_id ?? null) as string | null,
       cwd,
       transcript_path: payload.transcript_path as string | null,
     });

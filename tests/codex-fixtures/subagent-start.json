@@ -1,9 +1,9 @@
 {
   "sessionID": "session_test_123",
-  "messageID": "msg_user_1",
-  "prompt": "Hello agent, what is the capital of France?",
-  "timestamp": 1782348580000,
-  "turn_id": "turn_1",
+  "subagent_id": "subagent_1",
+  "parent_turn_id": "turn_3",
+  "agent_type": "codex-search",
+  "turn_id": "turn_3",
   "cwd": "/Users/nav/Projects/my-app",
   "transcript_path": "/tmp/codex-transcripts/session_test_123.jsonl"
 }
