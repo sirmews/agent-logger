@@ -186,6 +186,8 @@ export async function ingestTelemetry(bufferPath: string, db: Database): Promise
     }
   }
 
+  const permissionRequestCounters = new Map<string, number>();
+
   db.transaction(() => {
     for (const { eventName, sessionId, timestamp, projectPath, agentName, payload } of events) {
       ensureSessionExists(db, sessionId, timestamp, projectPath, agentName);
@@ -325,16 +327,26 @@ export async function ingestTelemetry(bufferPath: string, db: Database): Promise
         const permissionMode = isEnvelope ? (payload.permission_mode ?? payload.normalized?.permission_mode ?? null) : (payload.permission_mode ?? null);
         const agentId = isEnvelope ? (payload.normalized?.agent_id ?? null) : (payload.agent_id ?? null);
         const agentType = isEnvelope ? (payload.normalized?.agent_type ?? null) : (payload.agent_type ?? null);
-        const requestId = payload.record_id ?? `${sessionId}-${timestamp}`;
+        const requestId = payload.record_id
+          ?? (() => {
+            const key = `${sessionId}-${timestamp}-${turnId ?? "unknown"}-${toolName ?? "unknown"}-${agentType ?? "unknown"}`;
+            const next = (permissionRequestCounters.get(key) ?? 0) + 1;
+            permissionRequestCounters.set(key, next);
+            return `${key}-${next}`;
+          })();
 
         instrument("PermissionRequest", () => {
           db.prepare(`
             INSERT INTO codex_permission_requests (request_id, session_id, tool_name, tool_input, turn_id, permission_mode, agent_id, agent_type, timestamp)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(request_id) DO UPDATE SET
-              tool_name = excluded.tool_name,
+              tool_name = COALESCE(excluded.tool_name, codex_permission_requests.tool_name),
+              tool_input = COALESCE(excluded.tool_input, codex_permission_requests.tool_input),
+              turn_id = COALESCE(excluded.turn_id, codex_permission_requests.turn_id),
               permission_mode = COALESCE(excluded.permission_mode, codex_permission_requests.permission_mode),
-              agent_type = COALESCE(excluded.agent_type, codex_permission_requests.agent_type)
+              agent_id = COALESCE(excluded.agent_id, codex_permission_requests.agent_id),
+              agent_type = COALESCE(excluded.agent_type, codex_permission_requests.agent_type),
+              timestamp = MAX(excluded.timestamp, codex_permission_requests.timestamp)
           `).run(requestId, sessionId, toolName, toolInput ? JSON.stringify(toolInput) : null, turnId, permissionMode, agentId, agentType, timestamp);
         });
 
