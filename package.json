@@ -33,7 +33,8 @@
     "release:minor": "bun run quality && standard-version --release-as minor",
     "release:patch": "bun run quality && standard-version --release-as patch",
     "release:major": "bun run quality && standard-version --release-as major",
-    "view": "bun bin/agent-logger.js view"
+    "view": "bun bin/agent-logger.js view",
+    "ingest": "bun bin/agent-logger.js ingest"
   },
   "keywords": [
     "opencode",
