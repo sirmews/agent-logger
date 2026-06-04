@@ -1,4 +1,4 @@
-import { Database } from "bun:sqlite";
+import { Database, Statement } from "bun:sqlite";
 import * as fs from "fs";
 import * as readline from "readline";
 import { getIngestDb } from "./ingest-db";
@@ -14,26 +14,26 @@ function truncateString(s: string | null | undefined, max = 200000): string | nu
   return s.slice(0, max) + "\n\n---TRUNCATED---";
 }
 
-function ensureSessionExists(db: Database, sessionId: string, timestamp: number, projectPath = "unknown", agentName: string | null = null) {
-  const existing = db.prepare("SELECT session_id, project_path, agent_name FROM codex_sessions WHERE session_id = ?").get(sessionId) as any;
+function ensureSessionExists(
+  selectSessionStmt: Statement,
+  insertSessionStmt: Statement,
+  updateSessionStmt: Statement,
+  sessionId: string,
+  timestamp: number,
+  projectPath = "unknown",
+  agentName: string | null = null
+) {
+  const existing = selectSessionStmt.get(sessionId) as any;
   if (!existing) {
     instrument("ensureSessionExists:insert", () => {
-      db.prepare(`
-        INSERT INTO codex_sessions (session_id, project_path, agent_name, start_time)
-        VALUES (?, ?, ?, ?)
-      `).run(sessionId, projectPath, agentName, timestamp);
+      insertSessionStmt.run(sessionId, projectPath, agentName, timestamp);
     });
   } else {
     const updatePath = projectPath !== "unknown" && existing.project_path === "unknown";
     const updateAgent = agentName !== null && existing.agent_name === null;
     if (updatePath || updateAgent) {
       instrument("ensureSessionExists:update", () => {
-        db.prepare(`
-          UPDATE codex_sessions
-          SET project_path = COALESCE(NULLIF(?, 'unknown'), project_path),
-              agent_name = COALESCE(agent_name, ?)
-          WHERE session_id = ?
-        `).run(projectPath, agentName, sessionId);
+        updateSessionStmt.run(projectPath, agentName, sessionId);
       });
     }
   }
@@ -188,9 +188,120 @@ export async function ingestTelemetry(bufferPath: string, db: Database): Promise
 
   const permissionRequestCounters = new Map<string, number>();
 
+  // Prepare all statements outside the transaction loop to compile once
+  const selectSessionStmt = db.prepare("SELECT session_id, project_path, agent_name FROM codex_sessions WHERE session_id = ?");
+  const insertSessionStmt = db.prepare(`
+    INSERT INTO codex_sessions (session_id, project_path, agent_name, start_time)
+    VALUES (?, ?, ?, ?)
+  `);
+  const updateSessionStmt = db.prepare(`
+    UPDATE codex_sessions
+    SET project_path = COALESCE(NULLIF(?, 'unknown'), project_path),
+        agent_name = COALESCE(agent_name, ?)
+    WHERE session_id = ?
+  `);
+
+  const updateSessionStartStmt = db.prepare(`
+    UPDATE codex_sessions
+    SET model_provider = COALESCE(?, model_provider),
+        model_id = COALESCE(?, model_id),
+        session_source = COALESCE(?, session_source),
+        permission_mode = COALESCE(?, permission_mode),
+        transcript_path = COALESCE(?, transcript_path),
+        git_root = COALESCE(?, git_root),
+        git_branch = COALESCE(?, git_branch),
+        git_commit = COALESCE(?, git_commit),
+        git_dirty = COALESCE(?, git_dirty),
+        git_remote_url = COALESCE(?, git_remote_url)
+    WHERE session_id = ?
+  `);
+
+  const insertMessageStmt = db.prepare(`
+    INSERT INTO codex_messages (message_id, session_id, role, content, timestamp, turn_id)
+    VALUES (?, ?, 'user', ?, ?, ?)
+    ON CONFLICT(message_id) DO UPDATE SET
+      content = excluded.content,
+      timestamp = excluded.timestamp,
+      turn_id = COALESCE(excluded.turn_id, codex_messages.turn_id)
+  `);
+
+  const insertToolCallStmt = db.prepare(`
+    INSERT INTO codex_tool_calls (call_id, session_id, tool_name, input_args, status, start_time, turn_id)
+    VALUES (?, ?, ?, ?, 'pending', ?, ?)
+    ON CONFLICT(call_id) DO UPDATE SET
+      tool_name = excluded.tool_name,
+      input_args = COALESCE(excluded.input_args, codex_tool_calls.input_args),
+      start_time = excluded.start_time,
+      turn_id = COALESCE(excluded.turn_id, codex_tool_calls.turn_id)
+  `);
+
+  const selectToolCallStmt = db.prepare("SELECT start_time FROM codex_tool_calls WHERE call_id = ?");
+
+  const insertToolCallPostStmt = db.prepare(`
+    INSERT INTO codex_tool_calls (call_id, session_id, tool_name, output, status, end_time, duration_ms, turn_id, exit_code, truncation_meta)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+
+  const updateToolCallPostStmt = db.prepare(`
+    UPDATE codex_tool_calls
+    SET output = ?, status = ?, end_time = ?, duration_ms = ?, turn_id = COALESCE(?, turn_id), exit_code = ?, truncation_meta = ?
+    WHERE call_id = ?
+  `);
+
+  const insertPermissionRequestStmt = db.prepare(`
+    INSERT INTO codex_permission_requests (request_id, session_id, tool_name, tool_input, turn_id, permission_mode, agent_id, agent_type, timestamp)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(request_id) DO UPDATE SET
+      tool_name = COALESCE(excluded.tool_name, codex_permission_requests.tool_name),
+      tool_input = COALESCE(excluded.tool_input, codex_permission_requests.tool_input),
+      turn_id = COALESCE(excluded.turn_id, codex_permission_requests.turn_id),
+      permission_mode = COALESCE(excluded.permission_mode, codex_permission_requests.permission_mode),
+      agent_id = COALESCE(excluded.agent_id, codex_permission_requests.agent_id),
+      agent_type = COALESCE(excluded.agent_type, codex_permission_requests.agent_type),
+      timestamp = MAX(excluded.timestamp, codex_permission_requests.timestamp)
+  `);
+
+  const insertCompactEventStmt = db.prepare(`
+    INSERT INTO codex_compact_events (session_id, event_type, turn_id, reason, timestamp)
+    VALUES (?, ?, ?, ?, ?)
+  `);
+
+  const insertSubagentEventStmt = db.prepare(`
+    INSERT INTO codex_subagent_events (session_id, event_type, subagent_id, parent_turn_id, agent_type, timestamp)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `);
+
+  const updateSessionStopStmt = db.prepare(`
+    UPDATE codex_sessions
+    SET end_time = ?,
+        finish_reason = ?,
+        stop_hook_active = COALESCE(?, stop_hook_active),
+        git_end_branch = COALESCE(?, git_end_branch),
+        git_end_commit = COALESCE(?, git_end_commit),
+        git_end_dirty = COALESCE(?, git_end_dirty),
+        changed_files_json = COALESCE(?, changed_files_json)
+    WHERE session_id = ?
+  `);
+
+  const insertAssistantMessageStmt = db.prepare(`
+    INSERT INTO codex_messages (message_id, session_id, role, content, timestamp)
+    VALUES (?, ?, 'assistant', ?, ?)
+    ON CONFLICT(message_id) DO UPDATE SET
+      content = excluded.content,
+      timestamp = excluded.timestamp
+  `);
+
   db.transaction(() => {
     for (const { eventName, sessionId, timestamp, projectPath, agentName, payload } of events) {
-      ensureSessionExists(db, sessionId, timestamp, projectPath, agentName);
+      ensureSessionExists(
+        selectSessionStmt,
+        insertSessionStmt,
+        updateSessionStmt,
+        sessionId,
+        timestamp,
+        projectPath,
+        agentName
+      );
 
       const isEnvelope = payload.schema_version >= 1;
 
@@ -223,20 +334,7 @@ export async function ingestTelemetry(bufferPath: string, db: Database): Promise
         const git = extractGitContext(payload);
 
         instrument("SessionStart", () => {
-          db.prepare(`
-            UPDATE codex_sessions
-            SET model_provider = COALESCE(?, model_provider),
-                model_id = COALESCE(?, model_id),
-                session_source = COALESCE(?, session_source),
-                permission_mode = COALESCE(?, permission_mode),
-                transcript_path = COALESCE(?, transcript_path),
-                git_root = COALESCE(?, git_root),
-                git_branch = COALESCE(?, git_branch),
-                git_commit = COALESCE(?, git_commit),
-                git_dirty = COALESCE(?, git_dirty),
-                git_remote_url = COALESCE(?, git_remote_url)
-            WHERE session_id = ?
-          `).run(
+          updateSessionStartStmt.run(
             modelProvider, modelId, sessionSource, permissionMode, transcriptPath,
             git.git_root, git.git_branch, git.git_commit, git.git_dirty, git.git_remote_url,
             sessionId
@@ -251,14 +349,7 @@ export async function ingestTelemetry(bufferPath: string, db: Database): Promise
         const turnId = extractTurnId(payload);
 
         instrument("UserPromptSubmit", () => {
-          db.prepare(`
-            INSERT INTO codex_messages (message_id, session_id, role, content, timestamp, turn_id)
-            VALUES (?, ?, 'user', ?, ?, ?)
-            ON CONFLICT(message_id) DO UPDATE SET
-              content = excluded.content,
-              timestamp = excluded.timestamp,
-              turn_id = COALESCE(excluded.turn_id, codex_messages.turn_id)
-          `).run(messageId, sessionId, prompt, timestamp, turnId);
+          insertMessageStmt.run(messageId, sessionId, prompt, timestamp, turnId);
         });
 
       } else if (eventName === "PreToolUse") {
@@ -271,15 +362,7 @@ export async function ingestTelemetry(bufferPath: string, db: Database): Promise
         const turnId = extractTurnId(payload);
 
         instrument("PreToolUse", () => {
-          db.prepare(`
-            INSERT INTO codex_tool_calls (call_id, session_id, tool_name, input_args, status, start_time, turn_id)
-            VALUES (?, ?, ?, ?, 'pending', ?, ?)
-            ON CONFLICT(call_id) DO UPDATE SET
-              tool_name = excluded.tool_name,
-              input_args = COALESCE(excluded.input_args, codex_tool_calls.input_args),
-              start_time = excluded.start_time,
-              turn_id = COALESCE(excluded.turn_id, codex_tool_calls.turn_id)
-          `).run(callId, sessionId, toolName, inputArgs, timestamp, turnId);
+          insertToolCallStmt.run(callId, sessionId, toolName, inputArgs, timestamp, turnId);
         });
 
       } else if (eventName === "PostToolUse") {
@@ -287,12 +370,12 @@ export async function ingestTelemetry(bufferPath: string, db: Database): Promise
         if (!callId) continue;
         const toolName = extractFromEnvelope(payload, "tool", "tool_name", "tool_name") ?? "";
         const toolResponse = payload.output ?? payload.tool_response
-          ?? (isEnvelope ? payload.raw?.output : null) ?? null;
+          ?? (isEnvelope ? (payload.raw?.output ?? payload.raw?.tool_response) : null) ?? null;
         const status = extractFromEnvelope(payload, "status", "status", "status") ?? "completed";
         const turnId = extractTurnId(payload);
         const exitCode = payload.exit_code ?? (isEnvelope ? payload.normalized?.exit_code : null) ?? payload.exitCode ?? null;
 
-        const existing = db.prepare("SELECT start_time FROM codex_tool_calls WHERE call_id = ?").get(callId) as { start_time: number } | undefined;
+        const existing = selectToolCallStmt.get(callId) as { start_time: number } | undefined;
         let durationMs: number | null = null;
         if (existing && typeof existing.start_time === "number") {
           durationMs = timestamp - existing.start_time;
@@ -305,18 +388,11 @@ export async function ingestTelemetry(bufferPath: string, db: Database): Promise
 
         if (!existing) {
           instrument("PostToolUse:insert", () => {
-            db.prepare(`
-              INSERT INTO codex_tool_calls (call_id, session_id, tool_name, output, status, end_time, duration_ms, turn_id, exit_code, truncation_meta)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            `).run(callId, sessionId, toolName || "unknown", truncatedOutput, status, timestamp, durationMs, turnId, exitCode, truncationJson);
+            insertToolCallPostStmt.run(callId, sessionId, toolName || "unknown", truncatedOutput, status, timestamp, durationMs, turnId, exitCode, truncationJson);
           });
         } else {
           instrument("PostToolUse:update", () => {
-            db.prepare(`
-              UPDATE codex_tool_calls
-              SET output = ?, status = ?, end_time = ?, duration_ms = ?, turn_id = COALESCE(?, turn_id), exit_code = ?, truncation_meta = ?
-              WHERE call_id = ?
-            `).run(truncatedOutput, status, timestamp, durationMs, turnId, exitCode, truncationJson, callId);
+            updateToolCallPostStmt.run(truncatedOutput, status, timestamp, durationMs, turnId, exitCode, truncationJson, callId);
           });
         }
 
@@ -336,18 +412,7 @@ export async function ingestTelemetry(bufferPath: string, db: Database): Promise
           })();
 
         instrument("PermissionRequest", () => {
-          db.prepare(`
-            INSERT INTO codex_permission_requests (request_id, session_id, tool_name, tool_input, turn_id, permission_mode, agent_id, agent_type, timestamp)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(request_id) DO UPDATE SET
-              tool_name = COALESCE(excluded.tool_name, codex_permission_requests.tool_name),
-              tool_input = COALESCE(excluded.tool_input, codex_permission_requests.tool_input),
-              turn_id = COALESCE(excluded.turn_id, codex_permission_requests.turn_id),
-              permission_mode = COALESCE(excluded.permission_mode, codex_permission_requests.permission_mode),
-              agent_id = COALESCE(excluded.agent_id, codex_permission_requests.agent_id),
-              agent_type = COALESCE(excluded.agent_type, codex_permission_requests.agent_type),
-              timestamp = MAX(excluded.timestamp, codex_permission_requests.timestamp)
-          `).run(requestId, sessionId, toolName, toolInput ? JSON.stringify(toolInput) : null, turnId, permissionMode, agentId, agentType, timestamp);
+          insertPermissionRequestStmt.run(requestId, sessionId, toolName, toolInput ? JSON.stringify(toolInput) : null, turnId, permissionMode, agentId, agentType, timestamp);
         });
 
       } else if (eventName === "PreCompact" || eventName === "PostCompact") {
@@ -355,10 +420,7 @@ export async function ingestTelemetry(bufferPath: string, db: Database): Promise
         const reason = isEnvelope ? (payload.normalized?.reason ?? null) : (payload.reason ?? null);
 
         instrument("Compact", () => {
-          db.prepare(`
-            INSERT INTO codex_compact_events (session_id, event_type, turn_id, reason, timestamp)
-            VALUES (?, ?, ?, ?, ?)
-          `).run(sessionId, eventName, turnId, reason, timestamp);
+          insertCompactEventStmt.run(sessionId, eventName, turnId, reason, timestamp);
         });
 
       } else if (eventName === "SubagentStart" || eventName === "SubagentStop") {
@@ -367,10 +429,7 @@ export async function ingestTelemetry(bufferPath: string, db: Database): Promise
         const agentType = isEnvelope ? (payload.normalized?.agent_type ?? null) : (payload.agent_type ?? null);
 
         instrument("Subagent", () => {
-          db.prepare(`
-            INSERT INTO codex_subagent_events (session_id, event_type, subagent_id, parent_turn_id, agent_type, timestamp)
-            VALUES (?, ?, ?, ?, ?, ?)
-          `).run(sessionId, eventName, subagentId, parentTurnId, agentType, timestamp);
+          insertSubagentEventStmt.run(sessionId, eventName, subagentId, parentTurnId, agentType, timestamp);
         });
 
       } else if (eventName === "Stop") {
@@ -380,17 +439,7 @@ export async function ingestTelemetry(bufferPath: string, db: Database): Promise
         const git = extractGitContext(payload);
 
         instrument("Stop:session", () => {
-          db.prepare(`
-            UPDATE codex_sessions
-            SET end_time = ?,
-                finish_reason = ?,
-                stop_hook_active = COALESCE(?, stop_hook_active),
-                git_end_branch = COALESCE(?, git_end_branch),
-                git_end_commit = COALESCE(?, git_end_commit),
-                git_end_dirty = COALESCE(?, git_end_dirty),
-                changed_files_json = COALESCE(?, changed_files_json)
-            WHERE session_id = ?
-          `).run(
+          updateSessionStopStmt.run(
             timestamp, finishReason, stopHookActive,
             git.git_branch, git.git_commit, git.git_dirty, git.changed_files_json,
             sessionId
@@ -402,13 +451,7 @@ export async function ingestTelemetry(bufferPath: string, db: Database): Promise
         const messageId = lastResponse.messageID ?? payload.message_id ?? `msg_assistant_${sessionId}`;
 
         instrument("Stop:assistantMessage", () => {
-          db.prepare(`
-            INSERT INTO codex_messages (message_id, session_id, role, content, timestamp)
-            VALUES (?, ?, 'assistant', ?, ?)
-            ON CONFLICT(message_id) DO UPDATE SET
-              content = excluded.content,
-              timestamp = excluded.timestamp
-          `).run(messageId, sessionId, lastAssistantMessage, timestamp);
+          insertAssistantMessageStmt.run(messageId, sessionId, lastAssistantMessage, timestamp);
         });
       }
     }

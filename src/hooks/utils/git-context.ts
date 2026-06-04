@@ -23,7 +23,7 @@ function git(args: string[], cwd?: string): string | null {
       timeout: GIT_TIMEOUT_MS,
       cwd,
       stdio: ["pipe", "pipe", "pipe"],
-    }).trim() || null;
+    }).trim();
   } catch {
     return null;
   }

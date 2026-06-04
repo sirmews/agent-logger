@@ -126,9 +126,9 @@ export function getIngestDb(dbPath: string): Database {
     db.exec(`CREATE INDEX IF NOT EXISTS idx_codex_permission_requests_session ON codex_permission_requests(session_id);`);
     db.exec(`CREATE INDEX IF NOT EXISTS idx_codex_compact_events_session ON codex_compact_events(session_id);`);
     db.exec(`CREATE INDEX IF NOT EXISTS idx_codex_subagent_events_session ON codex_subagent_events(session_id);`);
-
-    migrateAdditive(db);
   })();
+
+  migrateAdditive(db);
 
   return db;
 }

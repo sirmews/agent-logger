@@ -10,7 +10,8 @@ import {
   type TruncationMeta,
   type GitContext,
 } from "../types.js";
-const LOGGER_VERSION: string = "__LOGGER_VERSION__";
+declare const __LOGGER_VERSION__: string;
+const LOGGER_VERSION: string = typeof __LOGGER_VERSION__ !== "undefined" ? __LOGGER_VERSION__ : "unknown";
 
 const MAX_PAYLOAD_BYTES = 200_000;
 const MAX_STRING_BYTES = 50_000;
@@ -33,8 +34,9 @@ export function createEnvelope(opts: {
   stop_hook_active?: boolean | null;
   git_context?: GitContext | null;
   skip_raw_truncation?: boolean;
+  truncation?: TruncationMeta | null;
 }): CaptureEnvelope {
-  let truncation: TruncationMeta | null = null;
+  let truncation: TruncationMeta | null = opts.truncation ?? null;
   let raw = opts.raw;
 
   if (!opts.skip_raw_truncation) {
@@ -110,10 +112,17 @@ export function truncateRawPayload(raw: Record<string, unknown>): Record<string,
   function truncateStringValue(s: string, maxBytes: number): string {
     const marker = "\n---TRUNCATED---";
     const markerBytes = Buffer.byteLength(marker, "utf-8");
+    if (maxBytes <= markerBytes) {
+      let truncated = s;
+      while (Buffer.byteLength(truncated, "utf-8") > maxBytes && truncated.length > 0) {
+        truncated = truncated.slice(0, -1);
+      }
+      return truncated;
+    }
     const effectiveMax = maxBytes - markerBytes;
     if (Buffer.byteLength(s, "utf-8") <= maxBytes) return s;
     let truncated = s.slice(0, effectiveMax);
-    while (Buffer.byteLength(truncated, "utf-8") > effectiveMax) {
+    while (Buffer.byteLength(truncated, "utf-8") > effectiveMax && truncated.length > 0) {
       truncated = truncated.slice(0, -1);
     }
     return truncated + marker;

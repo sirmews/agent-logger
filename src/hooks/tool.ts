@@ -76,8 +76,14 @@ function main() {
       let originalBytes = 0;
       if (typeof toolResponse === 'string' && Buffer.byteLength(toolResponse, 'utf-8') > MAX_TOOL_RESPONSE_BYTES) {
         originalBytes = Buffer.byteLength(toolResponse, 'utf-8');
-        storedBytes = MAX_TOOL_RESPONSE_BYTES;
-        truncationField = 'raw.output';
+        truncationField = payload.output !== undefined ? 'raw.output' : 'raw.tool_response';
+      }
+
+      const raw = originalBytes > 0 ? truncateRawPayload(payload) : payload;
+
+      if (truncationField) {
+        const storedStr = (raw.output ?? raw.tool_response ?? '') as string;
+        storedBytes = Buffer.byteLength(storedStr, 'utf-8');
       }
 
       let command: string | null = null;
@@ -108,8 +114,6 @@ function main() {
         };
       }
 
-      const raw = originalBytes > 0 ? truncateRawPayload(payload) : payload;
-
       const envelope = createEnvelope({
         source_agent: 'codex',
         source_event: eventName,
@@ -120,6 +124,11 @@ function main() {
         cwd,
         transcript_path: payload.transcript_path as string | null,
         skip_raw_truncation: originalBytes > 0,
+        truncation: truncationField ? {
+          field: truncationField,
+          stored_bytes: storedBytes,
+          original_bytes: originalBytes,
+        } : null,
       });
 
       writeToBuffer(envelope);
