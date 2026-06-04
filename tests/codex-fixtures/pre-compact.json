@@ -1,9 +1,7 @@
 {
   "sessionID": "session_test_123",
-  "messageID": "msg_user_1",
-  "prompt": "Hello agent, what is the capital of France?",
-  "timestamp": 1782348580000,
-  "turn_id": "turn_1",
+  "turn_id": "turn_5",
+  "reason": "context_window_exceeded",
   "cwd": "/Users/nav/Projects/my-app",
   "transcript_path": "/tmp/codex-transcripts/session_test_123.jsonl"
 }

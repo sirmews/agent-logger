@@ -7,17 +7,13 @@ const FIXTURES_DIR = resolve("tests/codex-fixtures");
 const TEST_BUFFER_PATH = join(FIXTURES_DIR, "telemetry-buffer-test.jsonl");
 
 describe("Codex Hook Commands Protocol Verification", () => {
-  // Before running tests, ensure we compile the latest TypeScript hooks.
   beforeAll(() => {
-    // If the test buffer exists, clean it up.
     if (existsSync(TEST_BUFFER_PATH)) {
       unlinkSync(TEST_BUFFER_PATH);
     }
-    // Compile using the build script
     execSync("bun run build", { stdio: "inherit" });
   });
 
-  // Clear test buffer before each test to isolate states and allow independent runs
   beforeEach(() => {
     if (existsSync(TEST_BUFFER_PATH)) {
       unlinkSync(TEST_BUFFER_PATH);
@@ -25,13 +21,12 @@ describe("Codex Hook Commands Protocol Verification", () => {
   });
 
   afterAll(() => {
-    // Clean up test buffer
     if (existsSync(TEST_BUFFER_PATH)) {
       unlinkSync(TEST_BUFFER_PATH);
     }
   });
 
-  test("SessionStart hook completes successfully with --start", () => {
+  test("SessionStart hook produces v1 envelope with --start", () => {
     const mockStdin = readFileSync(join(FIXTURES_DIR, "start.json"), "utf-8");
     const result = execSync("node ./dist/hooks/session.js --start", {
       input: mockStdin,
@@ -46,20 +41,28 @@ describe("Codex Hook Commands Protocol Verification", () => {
     expect(parsedStdout.continue).toBe(true);
     expect(parsedStdout.systemMessage).toBeNull();
 
-    // Verify written buffer line
     expect(existsSync(TEST_BUFFER_PATH)).toBe(true);
     const lines = readFileSync(TEST_BUFFER_PATH, "utf-8").trim().split("\n");
     expect(lines.length).toBe(1);
 
     const record = JSON.parse(lines[0]);
-    expect(record.event).toBe("SessionStart");
-    expect(record.type).toBe("task_started");
-    expect(record.sessionID).toBe("session_test_123");
-    expect(record.projectPath).toBe("/Users/nav/Projects/my-app");
-    expect(record.localTimestamp).toBeTypeOf("number");
+    expect(record.schema_version).toBe(1);
+    expect(record.source_agent).toBe("codex");
+    expect(record.source_event).toBe("SessionStart");
+    expect(record.session_id).toBe("session_test_123");
+    expect(record.captured_at).toBeTypeOf("number");
+    expect(record.record_id).toBeTypeOf("string");
+    expect(record.model).toBe("gpt-5.4");
+    expect(record.permission_mode).toBe("default");
+    expect(record.session_source).toBe("startup");
+    expect(record.transcript_path).toBe("/tmp/codex-transcripts/session_test_123.jsonl");
+    expect(record.raw.sessionID).toBe("session_test_123");
+    expect(record.raw.model).toBe("gpt-5.4");
+    expect(record.normalized.session_source).toBe("startup");
+    expect(record.git_context).toBeDefined();
   });
 
-  test("Stop hook completes successfully with --stop", () => {
+  test("Stop hook produces v1 envelope with --stop", () => {
     const mockStdin = readFileSync(join(FIXTURES_DIR, "stop.json"), "utf-8");
     const result = execSync("node ./dist/hooks/session.js --stop", {
       input: mockStdin,
@@ -73,20 +76,21 @@ describe("Codex Hook Commands Protocol Verification", () => {
     const parsedStdout = JSON.parse(result.trim());
     expect(parsedStdout.continue).toBe(true);
 
-    // Verify written buffer line
     const lines = readFileSync(TEST_BUFFER_PATH, "utf-8").trim().split("\n");
     expect(lines.length).toBe(1);
 
     const record = JSON.parse(lines[0]);
-    expect(record.event).toBe("Stop");
-    expect(record.type).toBe("task_complete");
-    expect(record.sessionID).toBe("session_test_123");
-    expect(record.finishReason).toBe("stop");
-    expect(record.lastResponse.content).toBe("The capital of France is Paris.");
-    expect(record.localTimestamp).toBeTypeOf("number");
+    expect(record.schema_version).toBe(1);
+    expect(record.source_event).toBe("Stop");
+    expect(record.session_id).toBe("session_test_123");
+    expect(record.stop_hook_active).toBe(false);
+    expect(record.normalized.finish_reason).toBe("stop");
+    expect(record.normalized.stop_hook_active).toBe(false);
+    expect(record.raw.finishReason).toBe("stop");
+    expect(record.git_context).toBeDefined();
   });
 
-  test("UserPromptSubmit hook completes successfully with --prompt", () => {
+  test("UserPromptSubmit hook produces v1 envelope with --prompt", () => {
     const mockStdin = readFileSync(join(FIXTURES_DIR, "prompt.json"), "utf-8");
     const result = execSync("node ./dist/hooks/message.js --prompt", {
       input: mockStdin,
@@ -100,19 +104,21 @@ describe("Codex Hook Commands Protocol Verification", () => {
     const parsedStdout = JSON.parse(result.trim());
     expect(parsedStdout.continue).toBe(true);
 
-    // Verify written buffer line
     const lines = readFileSync(TEST_BUFFER_PATH, "utf-8").trim().split("\n");
     expect(lines.length).toBe(1);
 
     const record = JSON.parse(lines[0]);
-    expect(record.event).toBe("UserPromptSubmit");
-    expect(record.sessionID).toBe("session_test_123");
-    expect(record.messageID).toBe("msg_user_1");
-    expect(record.prompt).toContain("capital of France");
-    expect(record.localTimestamp).toBeTypeOf("number");
+    expect(record.schema_version).toBe(1);
+    expect(record.source_event).toBe("UserPromptSubmit");
+    expect(record.session_id).toBe("session_test_123");
+    expect(record.turn_id).toBe("turn_1");
+    expect(record.normalized.message_id).toBe("msg_user_1");
+    expect(record.normalized.prompt).toContain("capital of France");
+    expect(record.raw.prompt).toContain("capital of France");
+    expect(record.transcript_path).toBe("/tmp/codex-transcripts/session_test_123.jsonl");
   });
 
-  test("PreToolUse hook completes successfully with --before", () => {
+  test("PreToolUse hook produces v1 envelope with --before", () => {
     const mockStdin = readFileSync(join(FIXTURES_DIR, "pre-tool.json"), "utf-8");
     const result = execSync("node ./dist/hooks/tool.js --before", {
       input: mockStdin,
@@ -126,20 +132,23 @@ describe("Codex Hook Commands Protocol Verification", () => {
     const parsedStdout = JSON.parse(result.trim());
     expect(parsedStdout.continue).toBe(true);
 
-    // Verify written buffer line
     const lines = readFileSync(TEST_BUFFER_PATH, "utf-8").trim().split("\n");
     expect(lines.length).toBe(1);
 
     const record = JSON.parse(lines[0]);
-    expect(record.event).toBe("PreToolUse");
-    expect(record.sessionID).toBe("session_test_123");
-    expect(record.callID).toBe("call_tool_1");
-    expect(record.tool).toBe("Execute");
-    expect(record.args.command).toBe("ls -la");
-    expect(record.localTimestamp).toBeTypeOf("number");
+    expect(record.schema_version).toBe(1);
+    expect(record.source_event).toBe("PreToolUse");
+    expect(record.session_id).toBe("session_test_123");
+    expect(record.turn_id).toBe("turn_1");
+    expect(record.normalized.tool_name).toBe("Bash");
+    expect(record.normalized.tool_use_id).toBe("call_tool_1");
+    expect(record.normalized.turn_id).toBe("turn_1");
+    expect(record.normalized.command).toBe("ls -la");
+    expect(record.raw.callID).toBe("call_tool_1");
+    expect(record.raw.tool).toBe("Bash");
   });
 
-  test("PostToolUse hook completes successfully with --after", () => {
+  test("PostToolUse hook produces v1 envelope with --after", () => {
     const mockStdin = readFileSync(join(FIXTURES_DIR, "post-tool.json"), "utf-8");
     const result = execSync("node ./dist/hooks/tool.js --after", {
       input: mockStdin,
@@ -153,17 +162,157 @@ describe("Codex Hook Commands Protocol Verification", () => {
     const parsedStdout = JSON.parse(result.trim());
     expect(parsedStdout.continue).toBe(true);
 
-    // Verify written buffer line
     const lines = readFileSync(TEST_BUFFER_PATH, "utf-8").trim().split("\n");
     expect(lines.length).toBe(1);
 
     const record = JSON.parse(lines[0]);
-    expect(record.event).toBe("PostToolUse");
-    expect(record.sessionID).toBe("session_test_123");
-    expect(record.callID).toBe("call_tool_1");
-    expect(record.tool).toBe("Execute");
-    expect(record.status).toBe("completed");
-    expect(record.output).toContain("total 40");
-    expect(record.localTimestamp).toBeTypeOf("number");
+    expect(record.schema_version).toBe(1);
+    expect(record.source_event).toBe("PostToolUse");
+    expect(record.session_id).toBe("session_test_123");
+    expect(record.turn_id).toBe("turn_1");
+    expect(record.normalized.tool_name).toBe("Bash");
+    expect(record.normalized.status).toBe("completed");
+    expect(record.raw.callID).toBe("call_tool_1");
+    expect(record.raw.tool).toBe("Bash");
+  });
+
+  test("PermissionRequest hook produces v1 envelope", () => {
+    const mockStdin = readFileSync(join(FIXTURES_DIR, "permission-request.json"), "utf-8");
+    const result = execSync("node ./dist/hooks/permission.js", {
+      input: mockStdin,
+      encoding: "utf-8",
+      env: {
+        ...process.env,
+        CODEX_TELEMETRY_BUFFER_PATH: TEST_BUFFER_PATH,
+      },
+    });
+
+    const parsedStdout = JSON.parse(result.trim());
+    expect(parsedStdout.decision).toBe("allow");
+
+    const lines = readFileSync(TEST_BUFFER_PATH, "utf-8").trim().split("\n");
+    expect(lines.length).toBe(1);
+
+    const record = JSON.parse(lines[0]);
+    expect(record.schema_version).toBe(1);
+    expect(record.source_event).toBe("PermissionRequest");
+    expect(record.session_id).toBe("session_test_123");
+    expect(record.turn_id).toBe("turn_2");
+    expect(record.permission_mode).toBe("default");
+    expect(record.normalized.tool_name).toBe("Bash");
+    expect(record.normalized.permission_mode).toBe("default");
+    expect(record.normalized.agent_id).toBe("agent_main");
+    expect(record.normalized.agent_type).toBe("codex-developer");
+    expect(record.raw.tool_name).toBe("Bash");
+  });
+
+  test("PreCompact hook produces v1 envelope", () => {
+    const mockStdin = readFileSync(join(FIXTURES_DIR, "pre-compact.json"), "utf-8");
+    const result = execSync("node ./dist/hooks/compact.js --pre", {
+      input: mockStdin,
+      encoding: "utf-8",
+      env: {
+        ...process.env,
+        CODEX_TELEMETRY_BUFFER_PATH: TEST_BUFFER_PATH,
+      },
+    });
+
+    const parsedStdout = JSON.parse(result.trim());
+    expect(parsedStdout.continue).toBe(true);
+
+    const lines = readFileSync(TEST_BUFFER_PATH, "utf-8").trim().split("\n");
+    expect(lines.length).toBe(1);
+
+    const record = JSON.parse(lines[0]);
+    expect(record.schema_version).toBe(1);
+    expect(record.source_event).toBe("PreCompact");
+    expect(record.turn_id).toBe("turn_5");
+    expect(record.normalized.reason).toBe("context_window_exceeded");
+  });
+
+  test("PostCompact hook produces v1 envelope", () => {
+    const mockStdin = readFileSync(join(FIXTURES_DIR, "post-compact.json"), "utf-8");
+    const result = execSync("node ./dist/hooks/compact.js --post", {
+      input: mockStdin,
+      encoding: "utf-8",
+      env: {
+        ...process.env,
+        CODEX_TELEMETRY_BUFFER_PATH: TEST_BUFFER_PATH,
+      },
+    });
+
+    const parsedStdout = JSON.parse(result.trim());
+    expect(parsedStdout.continue).toBe(true);
+
+    const record = JSON.parse(readFileSync(TEST_BUFFER_PATH, "utf-8").trim());
+    expect(record.source_event).toBe("PostCompact");
+  });
+
+  test("SubagentStart hook produces v1 envelope", () => {
+    const mockStdin = readFileSync(join(FIXTURES_DIR, "subagent-start.json"), "utf-8");
+    const result = execSync("node ./dist/hooks/subagent.js --start", {
+      input: mockStdin,
+      encoding: "utf-8",
+      env: {
+        ...process.env,
+        CODEX_TELEMETRY_BUFFER_PATH: TEST_BUFFER_PATH,
+      },
+    });
+
+    const parsedStdout = JSON.parse(result.trim());
+    expect(parsedStdout.continue).toBe(true);
+
+    const record = JSON.parse(readFileSync(TEST_BUFFER_PATH, "utf-8").trim());
+    expect(record.source_event).toBe("SubagentStart");
+    expect(record.normalized.subagent_id).toBe("subagent_1");
+    expect(record.normalized.parent_turn_id).toBe("turn_3");
+    expect(record.normalized.agent_type).toBe("codex-search");
+  });
+
+  test("SubagentStop hook produces v1 envelope", () => {
+    const mockStdin = readFileSync(join(FIXTURES_DIR, "subagent-stop.json"), "utf-8");
+    const result = execSync("node ./dist/hooks/subagent.js --stop", {
+      input: mockStdin,
+      encoding: "utf-8",
+      env: {
+        ...process.env,
+        CODEX_TELEMETRY_BUFFER_PATH: TEST_BUFFER_PATH,
+      },
+    });
+
+    const parsedStdout = JSON.parse(result.trim());
+    expect(parsedStdout.continue).toBe(true);
+
+    const record = JSON.parse(readFileSync(TEST_BUFFER_PATH, "utf-8").trim());
+    expect(record.source_event).toBe("SubagentStop");
+    expect(record.normalized.subagent_id).toBe("subagent_1");
+  });
+
+  test("Hook fails safe with no stdin (does not block agent)", () => {
+    const result = execSync("node ./dist/hooks/session.js --start", {
+      input: "",
+      encoding: "utf-8",
+      env: {
+        ...process.env,
+        CODEX_TELEMETRY_BUFFER_PATH: TEST_BUFFER_PATH,
+      },
+    });
+
+    const parsedStdout = JSON.parse(result.trim());
+    expect(parsedStdout.continue).toBe(true);
+  });
+
+  test("Hook fails safe with invalid JSON stdin", () => {
+    const result = execSync("node ./dist/hooks/tool.js --before", {
+      input: "not valid json{{{",
+      encoding: "utf-8",
+      env: {
+        ...process.env,
+        CODEX_TELEMETRY_BUFFER_PATH: TEST_BUFFER_PATH,
+      },
+    });
+
+    const parsedStdout = JSON.parse(result.trim());
+    expect(parsedStdout.continue).toBe(true);
   });
 });

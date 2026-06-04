@@ -1,5 +1,8 @@
 import { readStdinSync } from './utils/stdin.js';
 import { writeToBuffer } from './utils/buffer-writer.js';
+import { createEnvelope } from './utils/envelope.js';
+import { getSessionStartGitContext, getStopGitContext } from './utils/git-context.js';
+import type { CodexPermissionMode, CodexSessionSource } from './types.js';
 
 function main() {
   try {
@@ -7,13 +10,12 @@ function main() {
     const isStop = process.argv.includes('--stop');
 
     if (!isStart && !isStop) {
-      // Print continue and exit if neither flag is passed
       console.log(JSON.stringify({ continue: true }));
       process.exit(0);
     }
 
     const stdinText = readStdinSync().trim();
-    let payload: any = {};
+    let payload: Record<string, unknown> = {};
     if (stdinText) {
       try {
         payload = JSON.parse(stdinText);
@@ -22,25 +24,69 @@ function main() {
       }
     }
 
-    const eventName = isStart ? 'SessionStart' : 'Stop';
-    
-    // Add event name and local timestamp
-    const record = {
-      ...payload,
-      event: eventName,
-      localTimestamp: Date.now()
-    };
-
-    writeToBuffer(record);
+    const cwd = (payload.cwd ?? process.cwd()) as string;
 
     if (isStart) {
+      const eventName = 'SessionStart';
+      const model = typeof payload.model === 'string'
+        ? payload.model
+        : typeof payload.model === 'object' && payload.model !== null
+          ? ((payload.model as Record<string, unknown>).modelID ?? (payload.model as Record<string, unknown>).modelId ?? null) as string | null
+          : null;
+      const permissionMode = (payload.permission_mode ?? null) as CodexPermissionMode | null;
+      const sessionSource = (payload.source ?? null) as CodexSessionSource | null;
+
+      const gitContext = getSessionStartGitContext(cwd);
+
+      const normalized: Record<string, unknown> = {
+        session_source: sessionSource,
+      };
+
+      const envelope = createEnvelope({
+        source_agent: 'codex',
+        source_event: eventName,
+        raw: payload,
+        normalized,
+        session_id: (payload.sessionID ?? payload.session_id) as string | null,
+        cwd,
+        model,
+        permission_mode: permissionMode,
+        session_source: sessionSource,
+        transcript_path: payload.transcript_path as string | null,
+        git_context: gitContext,
+      });
+
+      writeToBuffer(envelope);
       console.log(JSON.stringify({ continue: true, systemMessage: null }));
     } else {
+      const eventName = 'Stop';
+      const stopHookActive = (payload.stop_hook_active ?? null) as boolean | null;
+
+      const gitContext = getStopGitContext(cwd);
+
+      const normalized: Record<string, unknown> = {
+        finish_reason: payload.finishReason ?? payload.finish_reason ?? null,
+        stop_hook_active: stopHookActive,
+      };
+
+      const envelope = createEnvelope({
+        source_agent: 'codex',
+        source_event: eventName,
+        raw: payload,
+        normalized,
+        session_id: (payload.sessionID ?? payload.session_id) as string | null,
+        cwd,
+        stop_hook_active: stopHookActive,
+        transcript_path: payload.transcript_path as string | null,
+        git_context: gitContext,
+      });
+
+      writeToBuffer(envelope);
       console.log(JSON.stringify({ continue: true }));
     }
+
     process.exit(0);
   } catch (err) {
-    // Top-level catch to ensure zero-latency/fail-safe operation
     console.log(JSON.stringify({ continue: true }));
     process.exit(0);
   }

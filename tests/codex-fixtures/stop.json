@@ -1,8 +1,10 @@
 {
-  "type": "task_complete",
   "sessionID": "session_test_123",
   "timestamp": 1782348610000,
   "finishReason": "stop",
+  "stop_hook_active": false,
+  "cwd": "/Users/nav/Projects/my-app",
+  "transcript_path": "/tmp/codex-transcripts/session_test_123.jsonl",
   "lastResponse": {
     "messageID": "msg_assistant_1",
     "content": "The capital of France is Paris."
