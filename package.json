@@ -74,5 +74,8 @@
   ],
   "dependencies": {
     "zod": "^4.4.3"
+  },
+  "bin": {
+    "agent-logger": "./bin/agent-logger.js"
   }
 }
