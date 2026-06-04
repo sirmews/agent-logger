@@ -51,6 +51,16 @@ const HTML_TEMPLATE = `
         .badge.pending { background: rgba(148, 163, 184, 0.2); color: var(--text-muted); }
         pre { background: rgba(0,0,0,0.3); padding: 10px; border-radius: 4px; overflow-x: auto; font-size: 0.85rem; }
     </style>
+    <script>
+        function toggleDetails(id) {
+            const el = document.getElementById(id);
+            if (el.style.display === 'none') {
+                el.style.display = 'table-row';
+            } else {
+                el.style.display = 'none';
+            }
+        }
+    </script>
 </head>
 <body>
     <div class="container">
@@ -117,18 +127,39 @@ function renderSessions() {
 
 function renderTools() {
   try {
-    const tools = db.prepare("SELECT tool_name, status, duration_ms, start_time, input_args, output FROM codex_tool_calls ORDER BY start_time DESC LIMIT 50").all() as any[];
-    let html = '<div class="card"><table><tr><th>Tool</th><th>Status</th><th>Duration</th><th>Time</th><th>Preview</th></tr>';
-    for (const t of tools) {
+    const tools = db.prepare("SELECT call_id, tool_name, status, duration_ms, start_time, input_args, output FROM codex_tool_calls ORDER BY start_time DESC LIMIT 50").all() as any[];
+    let html = '<div class="card"><table><tr><th>Tool</th><th>Status</th><th>Duration</th><th>Time</th><th>Details</th></tr>';
+    for (let i = 0; i < tools.length; i++) {
+      const t = tools[i];
       const date = new Date(t.start_time).toLocaleString();
       const statusCls = t.status === 'error' ? 'error' : (t.status === 'completed' ? 'success' : 'pending');
-      const inputStr = t.input_args ? (t.input_args.length > 50 ? t.input_args.substring(0, 50) + '...' : t.input_args) : '';
+      const inputStr = t.input_args ? (t.input_args.length > 60 ? t.input_args.substring(0, 60) + '...' : t.input_args) : '';
+      
+      const safeInput = t.input_args ? String(t.input_args).replace(/</g, '&lt;') : 'null';
+      const safeOutput = t.output ? String(t.output).replace(/</g, '&lt;') : 'null';
+
       html += `<tr>
         <td><strong>${t.tool_name}</strong></td>
         <td><span class="badge ${statusCls}">${t.status}</span></td>
         <td>${t.duration_ms ? t.duration_ms + 'ms' : '-'}</td>
         <td>${date}</td>
-        <td><code style="color: var(--text-muted); font-size: 0.8rem">${inputStr.replace(/</g, '&lt;')}</code></td>
+        <td>
+          <code style="color: var(--primary); font-size: 0.8rem; cursor: pointer;" onclick="toggleDetails('details-${i}')" title="Click to view full input and output">
+            ${inputStr.replace(/</g, '&lt;')} <span style="opacity: 0.7;">&#9660;</span>
+          </code>
+        </td>
+      </tr>
+      <tr id="details-${i}" style="display: none; background: rgba(0,0,0,0.2);">
+        <td colspan="5" style="padding: 15px;">
+          <div style="margin-bottom: 10px;">
+            <strong style="color: var(--primary); font-size: 0.85rem; text-transform: uppercase;">Full Input Arguments:</strong>
+            <pre style="white-space: pre-wrap; word-wrap: break-word; max-height: 200px; overflow-y: auto; margin-top: 5px;">${safeInput}</pre>
+          </div>
+          <div>
+            <strong style="color: var(--primary); font-size: 0.85rem; text-transform: uppercase;">Tool Output:</strong>
+            <pre style="white-space: pre-wrap; word-wrap: break-word; max-height: 400px; overflow-y: auto; margin-top: 5px; border-left: 3px solid var(--${statusCls}); padding-left: 10px;">${safeOutput}</pre>
+          </div>
+        </td>
       </tr>`;
     }
     return html + '</table></div>';
