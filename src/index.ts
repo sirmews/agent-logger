@@ -8,6 +8,10 @@
 import type { Plugin, PluginInput, Hooks } from "@opencode-ai/plugin";
 import { tool } from "@opencode-ai/plugin";
 import { Database } from "bun:sqlite";
+import { TelemetryIngester, normalizeEvent } from "./cli/ingester.js";
+import { initCodexSchema } from "./cli/ingest-db.js";
+import { createEnvelope } from "./hooks/utils/envelope.js";
+import { getSessionStartGitContext, getStopGitContext } from "./hooks/utils/git-context.js";
 import { dirname, join, resolve } from "path";
 import { homedir } from "os";
 import { chmodSync, closeSync, existsSync, mkdirSync, openSync } from "fs";
@@ -777,6 +781,8 @@ export const CommunicationLoggerPlugin: Plugin = async ({
   const dbPath = resolveDbPath();
   const db = openDb(dbPath);
   migrate(db);
+  initCodexSchema(db);
+  const ingester = new TelemetryIngester(db);
 
   const projectName = directory.split("/").filter(Boolean).pop() || "unknown";
 
@@ -1259,6 +1265,139 @@ export const CommunicationLoggerPlugin: Plugin = async ({
         const t: string | undefined = e?.type;
         const p: any = e?.properties ?? {};
         if (!t) return;
+
+        // --- OPENCODE PARITY CONTRACT ---
+        // We capture OpenCode's rich bus events, normalize them to the v1 Contract, 
+        // and instantly ingest them into the shared codex_* tables to achieve 100% dataset parity.
+        try {
+          let envelope = null;
+          const sid = p?.sessionID ?? "unknown";
+          const timestamp = p?.info?.time?.completed ?? p?.info?.time?.created ?? p?.part?.time?.end ?? p?.part?.time?.start ?? p?.time ?? Date.now();
+
+          if (t === "session.created") {
+            const info = p.info ?? {};
+            envelope = createEnvelope({
+              captured_at: timestamp,
+              source_agent: "opencode",
+              source_event: "SessionStart",
+              session_id: sid,
+              cwd: directory,
+              model: info.model ? (typeof info.model === "object" ? `${info.model.providerID ?? "unknown"}/${info.model.modelID ?? "unknown"}` : String(info.model)) : null,
+              session_source: "startup",
+              git_context: getSessionStartGitContext(directory),
+              raw: e,
+              normalized: {},
+            });
+          } else if (t === "message.updated" && p.info?.role === "user") {
+            envelope = createEnvelope({
+              captured_at: timestamp,
+              source_agent: "opencode",
+              source_event: "UserPromptSubmit",
+              session_id: sid,
+              turn_id: p.info?.id,
+              cwd: directory,
+              raw: e,
+              normalized: {
+                message_id: p.info?.id,
+                prompt: p.info?.summary ?? p.info?.text ?? "",
+              },
+            });
+          } else if (t === "message.updated" && p.info?.role === "assistant" && p.info?.finish != null) {
+            envelope = createEnvelope({
+              captured_at: timestamp,
+              source_agent: "opencode",
+              source_event: "Stop",
+              session_id: sid,
+              turn_id: p.info?.parentID,
+              cwd: directory,
+              raw: {
+                ...e,
+                lastResponse: {
+                  messageID: p.info?.id,
+                  content: p.info?.summary ?? "",
+                },
+              },
+              normalized: {
+                finish_reason: p.info?.finish,
+                stop_hook_active: false,
+              },
+              git_context: getStopGitContext(directory),
+            });
+          } else if (t === "message.part.updated" && p.part?.type === "tool") {
+            const status = p.part.state?.status;
+            if (status === "pending" || status === "running") {
+              envelope = createEnvelope({
+              captured_at: timestamp,
+                source_agent: "opencode",
+                source_event: "PreToolUse",
+                session_id: sid,
+                turn_id: p.part.messageID,
+                cwd: directory,
+                raw: e,
+                normalized: {
+                  tool_name: p.part.tool,
+                  tool_use_id: p.part.callID,
+                  tool_input: p.part.state?.input ?? null,
+                },
+              });
+            } else if (status === "completed" || status === "error") {
+              envelope = createEnvelope({
+              captured_at: timestamp,
+                source_agent: "opencode",
+                source_event: "PostToolUse",
+                session_id: sid,
+                turn_id: p.part.messageID,
+                cwd: directory,
+                raw: {
+                  ...e,
+                  output: p.part.state?.output ?? p.part.state?.error ?? "",
+                },
+                normalized: {
+                  tool_name: p.part.tool,
+                  tool_use_id: p.part.callID,
+                  status: status,
+                },
+              });
+            }
+          } else if (t === "permission.asked") {
+            envelope = createEnvelope({
+              captured_at: timestamp,
+              source_agent: "opencode",
+              source_event: "PermissionRequest",
+              session_id: sid,
+              turn_id: p.tool?.messageID ?? null,
+              cwd: directory,
+              raw: e,
+              normalized: {
+                tool_name: p.permission,
+                tool_input: p.metadata ?? null,
+                permission_mode: "ask",
+              },
+            });
+          } else if (t === "session.compacted") {
+            envelope = createEnvelope({
+              captured_at: timestamp,
+              source_agent: "opencode",
+              source_event: "PostCompact",
+              session_id: sid,
+              turn_id: null,
+              cwd: directory,
+              raw: e,
+              normalized: {},
+            });
+          }
+
+          if (envelope) {
+            const normalizedE = normalizeEvent(envelope);
+            if (normalizedE) {
+              ingester.ingestSingleEvent(normalizedE);
+            }
+          }
+        } catch (contractErr) {
+          void log("warn", "opencode contract mapping error", { error: String(contractErr) });
+        }
+        // --- END OPENCODE PARITY CONTRACT ---
+
 
         if (t.startsWith("session.")) {
           const sid = p?.sessionID;

@@ -158,16 +158,19 @@ Validation:
 
 ## PR 2: OpenCode Contract Parity
 
-Goal: make OpenCode capture map into the same shared contract so future training data can combine both agents.
+Goal: make OpenCode capture map into the same shared contract so future training data can combine both agents, while strictly preserving OpenCode's real-time direct-database transport.
 
 Recommended implementation scope:
 
-1. Map OpenCode plugin events to the shared envelope.
-2. Preserve raw OpenCode event payloads.
-3. Normalize OpenCode sessions, messages, tool calls, permissions, file edits, diffs, and outcomes into the same concepts used by Codex.
-4. Keep existing OpenCode database behavior compatible.
-5. Add tests that compare Codex-shaped and OpenCode-shaped records for shared normalization behavior.
-6. Update OpenCode docs to call out equivalent fields and platform-specific gaps.
+1. **Unify the Data, Not the Transport**: OpenCode must *not* be forced to use the Codex JSONL buffer. OpenCode is a persistent daemon that registers real-time SQL tools (e.g., `analyze_logs`); using an eventually-consistent buffer would break these tools by feeding them stale data, and risk stranding data if the process exits before an "idle" flush.
+2. Refactor `src/cli/ingester.ts` to export its core SQL insert logic (e.g., an `ingestEnvelope(envelope, db)` helper) so it can be shared.
+3. Map OpenCode plugin events to the shared `CaptureEnvelope` (v1) in memory inside the `event` hook.
+4. Immediately pass those envelopes to the shared SQL insert logic, maintaining OpenCode's strongly consistent, synchronous database writes.
+5. Preserve raw OpenCode event payloads inside the envelopes.
+6. Normalize OpenCode sessions, messages, tool calls, permissions, file edits, diffs, and outcomes into the same concepts used by Codex.
+7. Keep existing OpenCode legacy table writes (`sessions`, `message_parts`, etc.) fully operational so existing custom tools do not break.
+8. Add tests that compare Codex-shaped and OpenCode-shaped records for shared normalization behavior.
+9. Update OpenCode docs to call out equivalent fields and platform-specific gaps.
 
 Validation:
 

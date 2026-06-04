@@ -14,31 +14,6 @@ function truncateString(s: string | null | undefined, max = 200000): string | nu
   return s.slice(0, max) + "\n\n---TRUNCATED---";
 }
 
-function ensureSessionExists(
-  selectSessionStmt: Statement,
-  insertSessionStmt: Statement,
-  updateSessionStmt: Statement,
-  sessionId: string,
-  timestamp: number,
-  projectPath = "unknown",
-  agentName: string | null = null
-) {
-  const existing = selectSessionStmt.get(sessionId) as any;
-  if (!existing) {
-    instrument("ensureSessionExists:insert", () => {
-      insertSessionStmt.run(sessionId, projectPath, agentName, timestamp);
-    });
-  } else {
-    const updatePath = projectPath !== "unknown" && existing.project_path === "unknown";
-    const updateAgent = agentName !== null && existing.agent_name === null;
-    if (updatePath || updateAgent) {
-      instrument("ensureSessionExists:update", () => {
-        updateSessionStmt.run(projectPath, agentName, sessionId);
-      });
-    }
-  }
-}
-
 const TelemetryPayloadSchema = z.object({
   event: z.string().optional(),
   hook_event_name: z.string().optional(),
@@ -158,6 +133,330 @@ function extractGitContext(payload: any): {
   };
 }
 
+export class TelemetryIngester {
+  private db: Database;
+  // Safe from memory leak in daemon because createEnvelope() always provides a record_id.
+  // This map is only populated during legacy offline CLI ingestion.
+  private permissionRequestCounters = new Map<string, number>();
+
+  private selectSessionStmt: Statement;
+  private insertSessionStmt: Statement;
+  private updateSessionStmt: Statement;
+  private updateSessionStartStmt: Statement;
+  private insertMessageStmt: Statement;
+  private insertToolCallStmt: Statement;
+  private selectToolCallStmt: Statement;
+  private insertToolCallPostStmt: Statement;
+  private updateToolCallPostStmt: Statement;
+  private insertPermissionRequestStmt: Statement;
+  private insertCompactEventStmt: Statement;
+  private insertSubagentEventStmt: Statement;
+  private updateSessionStopStmt: Statement;
+  private insertAssistantMessageStmt: Statement;
+
+  constructor(db: Database) {
+    this.db = db;
+    this.selectSessionStmt = db.prepare("SELECT session_id, project_path, agent_name FROM codex_sessions WHERE session_id = ?");
+    this.insertSessionStmt = db.prepare(`
+      INSERT INTO codex_sessions (session_id, project_path, agent_name, start_time)
+      VALUES (?, ?, ?, ?)
+    `);
+    this.updateSessionStmt = db.prepare(`
+      UPDATE codex_sessions
+      SET project_path = COALESCE(NULLIF(?, 'unknown'), project_path),
+          agent_name = COALESCE(agent_name, ?)
+      WHERE session_id = ?
+    `);
+
+    this.updateSessionStartStmt = db.prepare(`
+      UPDATE codex_sessions
+      SET model_provider = COALESCE(?, model_provider),
+          model_id = COALESCE(?, model_id),
+          session_source = COALESCE(?, session_source),
+          permission_mode = COALESCE(?, permission_mode),
+          transcript_path = COALESCE(?, transcript_path),
+          git_root = COALESCE(?, git_root),
+          git_branch = COALESCE(?, git_branch),
+          git_commit = COALESCE(?, git_commit),
+          git_dirty = COALESCE(?, git_dirty),
+          git_remote_url = COALESCE(?, git_remote_url)
+      WHERE session_id = ?
+    `);
+
+    this.insertMessageStmt = db.prepare(`
+      INSERT INTO codex_messages (message_id, session_id, role, content, timestamp, turn_id)
+      VALUES (?, ?, 'user', ?, ?, ?)
+      ON CONFLICT(message_id) DO UPDATE SET
+        content = excluded.content,
+        timestamp = excluded.timestamp,
+        turn_id = COALESCE(excluded.turn_id, codex_messages.turn_id)
+    `);
+
+    this.insertToolCallStmt = db.prepare(`
+      INSERT INTO codex_tool_calls (call_id, session_id, tool_name, input_args, status, start_time, turn_id)
+      VALUES (?, ?, ?, ?, 'pending', ?, ?)
+      ON CONFLICT(call_id) DO UPDATE SET
+        tool_name = excluded.tool_name,
+        input_args = COALESCE(excluded.input_args, codex_tool_calls.input_args),
+        start_time = excluded.start_time,
+        turn_id = COALESCE(excluded.turn_id, codex_tool_calls.turn_id)
+    `);
+
+    this.selectToolCallStmt = db.prepare("SELECT start_time FROM codex_tool_calls WHERE call_id = ?");
+
+    this.insertToolCallPostStmt = db.prepare(`
+      INSERT INTO codex_tool_calls (call_id, session_id, tool_name, output, status, end_time, duration_ms, turn_id, exit_code, truncation_meta)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    this.updateToolCallPostStmt = db.prepare(`
+      UPDATE codex_tool_calls
+      SET output = ?, status = ?, end_time = ?, duration_ms = ?, turn_id = COALESCE(?, turn_id), exit_code = ?, truncation_meta = ?
+      WHERE call_id = ?
+    `);
+
+    this.insertPermissionRequestStmt = db.prepare(`
+      INSERT INTO codex_permission_requests (request_id, session_id, tool_name, tool_input, turn_id, permission_mode, agent_id, agent_type, timestamp)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(request_id) DO UPDATE SET
+        tool_name = COALESCE(excluded.tool_name, codex_permission_requests.tool_name),
+        tool_input = COALESCE(excluded.tool_input, codex_permission_requests.tool_input),
+        turn_id = COALESCE(excluded.turn_id, codex_permission_requests.turn_id),
+        permission_mode = COALESCE(excluded.permission_mode, codex_permission_requests.permission_mode),
+        agent_id = COALESCE(excluded.agent_id, codex_permission_requests.agent_id),
+        agent_type = COALESCE(excluded.agent_type, codex_permission_requests.agent_type),
+        timestamp = MAX(excluded.timestamp, codex_permission_requests.timestamp)
+    `);
+
+    this.insertCompactEventStmt = db.prepare(`
+      INSERT INTO codex_compact_events (session_id, event_type, turn_id, reason, timestamp)
+      VALUES (?, ?, ?, ?, ?)
+    `);
+
+    this.insertSubagentEventStmt = db.prepare(`
+      INSERT INTO codex_subagent_events (session_id, event_type, subagent_id, parent_turn_id, agent_type, timestamp)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `);
+
+    this.updateSessionStopStmt = db.prepare(`
+      UPDATE codex_sessions
+      SET end_time = ?,
+          finish_reason = ?,
+          stop_hook_active = COALESCE(?, stop_hook_active),
+          git_end_branch = COALESCE(?, git_end_branch),
+          git_end_commit = COALESCE(?, git_end_commit),
+          git_end_dirty = COALESCE(?, git_end_dirty),
+          changed_files_json = COALESCE(?, changed_files_json)
+      WHERE session_id = ?
+    `);
+
+    this.insertAssistantMessageStmt = db.prepare(`
+      INSERT INTO codex_messages (message_id, session_id, role, content, timestamp, turn_id)
+      VALUES (?, ?, 'assistant', ?, ?, ?)
+      ON CONFLICT(message_id) DO UPDATE SET
+        content = excluded.content,
+        timestamp = excluded.timestamp,
+        turn_id = COALESCE(excluded.turn_id, codex_messages.turn_id)
+    `);
+  }
+
+  private ensureSessionExists(
+    sessionId: string,
+    timestamp: number,
+    projectPath = "unknown",
+    agentName: string | null = null
+  ) {
+    const existing = this.selectSessionStmt.get(sessionId) as any;
+    if (!existing) {
+      instrument("ensureSessionExists:insert", () => {
+        this.insertSessionStmt.run(sessionId, projectPath, agentName, timestamp);
+      });
+    } else {
+      const updatePath = projectPath !== "unknown" && existing.project_path === "unknown";
+      const updateAgent = agentName !== null && existing.agent_name === null;
+      if (updatePath || updateAgent) {
+        instrument("ensureSessionExists:update", () => {
+          this.updateSessionStmt.run(projectPath, agentName, sessionId);
+        });
+      }
+    }
+  }
+
+  /**
+   * Ingests an array of events inside a single transaction.
+   */
+  public ingestEvents(events: NormalizedEvent[]) {
+    this.db.transaction(() => {
+      for (const event of events) {
+        this.ingestSingleEvent(event);
+      }
+    })();
+  }
+
+  /**
+   * Ingests a single normalized event. It is highly recommended to call this 
+   * within a transaction if ingesting many events in bulk.
+   */
+  public ingestSingleEvent(event: NormalizedEvent) {
+    const { eventName, sessionId, timestamp, projectPath, agentName, payload } = event;
+
+    this.ensureSessionExists(sessionId, timestamp, projectPath, agentName);
+
+    const isEnvelope = payload.schema_version >= 1;
+
+    if (eventName === "SessionStart") {
+      let modelProvider: string | null = null;
+      let modelId: string | null = null;
+
+      const rawModel = payload.model ?? (isEnvelope ? payload.raw?.model : null);
+
+      if (rawModel) {
+        if (typeof rawModel === "object") {
+          modelProvider = rawModel.provider ?? rawModel.providerID ?? null;
+          modelId = rawModel.modelID ?? rawModel.modelId ?? null;
+        } else if (typeof rawModel === "string") {
+          if (rawModel.includes("/")) {
+            const parts = rawModel.split("/");
+            modelProvider = parts[0];
+            modelId = parts.slice(1).join("/");
+          } else {
+            modelId = rawModel;
+          }
+        }
+      }
+      if (!modelProvider) modelProvider = payload.model_provider ?? null;
+      if (!modelId) modelId = payload.model_id ?? null;
+
+      const sessionSource = payload.session_source ?? null;
+      const permissionMode = payload.permission_mode ?? null;
+      const transcriptPath = payload.transcript_path ?? null;
+      const git = extractGitContext(payload);
+
+      instrument("SessionStart", () => {
+        this.updateSessionStartStmt.run(
+          modelProvider, modelId, sessionSource, permissionMode, transcriptPath,
+          git.git_root, git.git_branch, git.git_commit, git.git_dirty, git.git_remote_url,
+          sessionId
+        );
+      });
+
+    } else if (eventName === "UserPromptSubmit") {
+      const messageId = extractFromEnvelope(payload, "messageID", "message_id", "message_id")
+        ?? payload.turn_id;
+      if (!messageId) return;
+      const prompt = extractFromEnvelope(payload, "prompt", "content", "prompt") ?? "";
+      const turnId = extractTurnId(payload);
+
+      instrument("UserPromptSubmit", () => {
+        this.insertMessageStmt.run(messageId, sessionId, prompt, timestamp, turnId);
+      });
+
+    } else if (eventName === "PreToolUse") {
+      const callId = extractFromEnvelope(payload, "callID", "call_id", "tool_use_id");
+      if (!callId) return;
+      const toolName = extractFromEnvelope(payload, "tool", "tool_name", "tool_name") ?? "";
+      const args = payload.args ?? payload.tool_input
+        ?? (isEnvelope ? payload.normalized?.tool_input : null) ?? null;
+      const inputArgs = args ? (typeof args === "string" ? args : JSON.stringify(args)) : null;
+      const turnId = extractTurnId(payload);
+
+      instrument("PreToolUse", () => {
+        this.insertToolCallStmt.run(callId, sessionId, toolName, inputArgs, timestamp, turnId);
+      });
+
+    } else if (eventName === "PostToolUse") {
+      const callId = extractFromEnvelope(payload, "callID", "call_id", "tool_use_id");
+      if (!callId) return;
+      const toolName = extractFromEnvelope(payload, "tool", "tool_name", "tool_name") ?? "";
+      const toolResponse = payload.output ?? payload.tool_response
+        ?? (isEnvelope ? (payload.raw?.output ?? payload.raw?.tool_response) : null) ?? null;
+      const status = extractFromEnvelope(payload, "status", "status", "status") ?? "completed";
+      const turnId = extractTurnId(payload);
+      const exitCode = payload.exit_code ?? (isEnvelope ? payload.normalized?.exit_code : null) ?? payload.exitCode ?? null;
+
+      const existing = this.selectToolCallStmt.get(callId) as { start_time: number } | undefined;
+      let durationMs: number | null = null;
+      if (existing && typeof existing.start_time === "number") {
+        durationMs = timestamp - existing.start_time;
+      }
+
+      const truncatedOutput = truncateString(typeof toolResponse === "string" ? toolResponse : (toolResponse ? JSON.stringify(toolResponse) : null));
+
+      const truncationMeta = isEnvelope ? (payload.truncation ?? payload.normalized?.truncation ?? null) : null;
+      const truncationJson = truncationMeta ? JSON.stringify(truncationMeta) : null;
+
+      if (!existing) {
+        instrument("PostToolUse:insert", () => {
+          this.insertToolCallPostStmt.run(callId, sessionId, toolName || "unknown", truncatedOutput, status, timestamp, durationMs, turnId, exitCode, truncationJson);
+        });
+      } else {
+        instrument("PostToolUse:update", () => {
+          this.updateToolCallPostStmt.run(truncatedOutput, status, timestamp, durationMs, turnId, exitCode, truncationJson, callId);
+        });
+      }
+
+    } else if (eventName === "PermissionRequest") {
+      const toolName = isEnvelope ? (payload.normalized?.tool_name ?? null) : (payload.tool_name ?? payload.tool ?? null);
+      const toolInput = isEnvelope ? (payload.normalized?.tool_input ?? null) : (payload.tool_input ?? payload.input ?? null);
+      const turnId = extractTurnId(payload);
+      const permissionMode = isEnvelope ? (payload.permission_mode ?? payload.normalized?.permission_mode ?? null) : (payload.permission_mode ?? null);
+      const agentId = isEnvelope ? (payload.normalized?.agent_id ?? null) : (payload.agent_id ?? null);
+      const agentType = isEnvelope ? (payload.normalized?.agent_type ?? null) : (payload.agent_type ?? null);
+      const requestId = payload.record_id
+        ?? (() => {
+          const key = `${sessionId}-${timestamp}-${turnId ?? "unknown"}-${toolName ?? "unknown"}-${agentType ?? "unknown"}`;
+          const next = (this.permissionRequestCounters.get(key) ?? 0) + 1;
+          this.permissionRequestCounters.set(key, next);
+          return `${key}-${next}`;
+        })();
+
+      instrument("PermissionRequest", () => {
+        this.insertPermissionRequestStmt.run(requestId, sessionId, toolName, toolInput ? JSON.stringify(toolInput) : null, turnId, permissionMode, agentId, agentType, timestamp);
+      });
+
+    } else if (eventName === "PreCompact" || eventName === "PostCompact") {
+      const turnId = extractTurnId(payload);
+      const reason = isEnvelope ? (payload.normalized?.reason ?? null) : (payload.reason ?? null);
+
+      instrument("Compact", () => {
+        this.insertCompactEventStmt.run(sessionId, eventName, turnId, reason, timestamp);
+      });
+
+    } else if (eventName === "SubagentStart" || eventName === "SubagentStop") {
+      const subagentId = isEnvelope ? (payload.normalized?.subagent_id ?? null) : (payload.subagent_id ?? null);
+      const parentTurnId = isEnvelope ? (payload.normalized?.parent_turn_id ?? null) : (payload.parent_turn_id ?? payload.turn_id ?? null);
+      const agentType = isEnvelope ? (payload.normalized?.agent_type ?? null) : (payload.agent_type ?? null);
+
+      instrument("Subagent", () => {
+        this.insertSubagentEventStmt.run(sessionId, eventName, subagentId, parentTurnId, agentType, timestamp);
+      });
+
+    } else if (eventName === "Stop") {
+      const finishReason = payload.finishReason ?? payload.finish_reason
+        ?? (isEnvelope ? payload.normalized?.finish_reason : null) ?? null;
+      const stopHookActive = payload.stop_hook_active ?? (isEnvelope ? payload.normalized?.stop_hook_active : null) ?? null;
+      const git = extractGitContext(payload);
+
+      instrument("Stop:session", () => {
+        this.updateSessionStopStmt.run(
+          timestamp, finishReason, stopHookActive,
+          git.git_branch, git.git_commit, git.git_dirty, git.changed_files_json,
+          sessionId
+        );
+      });
+
+      const lastResponse = payload.lastResponse ?? (isEnvelope ? payload.raw?.lastResponse : null) ?? {};
+      const lastAssistantMessage = lastResponse.content ?? payload.last_assistant_message ?? "";
+      const messageId = lastResponse.messageID ?? payload.message_id ?? `msg_assistant_${sessionId}`;
+
+      const turnId = extractTurnId(payload);
+      instrument("Stop:assistantMessage", () => {
+        this.insertAssistantMessageStmt.run(messageId, sessionId, lastAssistantMessage, timestamp, turnId);
+      });
+    }
+  }
+}
+
 /**
  * Parses raw JSONL telemetry buffer and ingests records into SQLite,
  * supporting both v1 envelopes and legacy format records.
@@ -186,276 +485,8 @@ export async function ingestTelemetry(bufferPath: string, db: Database): Promise
     }
   }
 
-  const permissionRequestCounters = new Map<string, number>();
-
-  // Prepare all statements outside the transaction loop to compile once
-  const selectSessionStmt = db.prepare("SELECT session_id, project_path, agent_name FROM codex_sessions WHERE session_id = ?");
-  const insertSessionStmt = db.prepare(`
-    INSERT INTO codex_sessions (session_id, project_path, agent_name, start_time)
-    VALUES (?, ?, ?, ?)
-  `);
-  const updateSessionStmt = db.prepare(`
-    UPDATE codex_sessions
-    SET project_path = COALESCE(NULLIF(?, 'unknown'), project_path),
-        agent_name = COALESCE(agent_name, ?)
-    WHERE session_id = ?
-  `);
-
-  const updateSessionStartStmt = db.prepare(`
-    UPDATE codex_sessions
-    SET model_provider = COALESCE(?, model_provider),
-        model_id = COALESCE(?, model_id),
-        session_source = COALESCE(?, session_source),
-        permission_mode = COALESCE(?, permission_mode),
-        transcript_path = COALESCE(?, transcript_path),
-        git_root = COALESCE(?, git_root),
-        git_branch = COALESCE(?, git_branch),
-        git_commit = COALESCE(?, git_commit),
-        git_dirty = COALESCE(?, git_dirty),
-        git_remote_url = COALESCE(?, git_remote_url)
-    WHERE session_id = ?
-  `);
-
-  const insertMessageStmt = db.prepare(`
-    INSERT INTO codex_messages (message_id, session_id, role, content, timestamp, turn_id)
-    VALUES (?, ?, 'user', ?, ?, ?)
-    ON CONFLICT(message_id) DO UPDATE SET
-      content = excluded.content,
-      timestamp = excluded.timestamp,
-      turn_id = COALESCE(excluded.turn_id, codex_messages.turn_id)
-  `);
-
-  const insertToolCallStmt = db.prepare(`
-    INSERT INTO codex_tool_calls (call_id, session_id, tool_name, input_args, status, start_time, turn_id)
-    VALUES (?, ?, ?, ?, 'pending', ?, ?)
-    ON CONFLICT(call_id) DO UPDATE SET
-      tool_name = excluded.tool_name,
-      input_args = COALESCE(excluded.input_args, codex_tool_calls.input_args),
-      start_time = excluded.start_time,
-      turn_id = COALESCE(excluded.turn_id, codex_tool_calls.turn_id)
-  `);
-
-  const selectToolCallStmt = db.prepare("SELECT start_time FROM codex_tool_calls WHERE call_id = ?");
-
-  const insertToolCallPostStmt = db.prepare(`
-    INSERT INTO codex_tool_calls (call_id, session_id, tool_name, output, status, end_time, duration_ms, turn_id, exit_code, truncation_meta)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `);
-
-  const updateToolCallPostStmt = db.prepare(`
-    UPDATE codex_tool_calls
-    SET output = ?, status = ?, end_time = ?, duration_ms = ?, turn_id = COALESCE(?, turn_id), exit_code = ?, truncation_meta = ?
-    WHERE call_id = ?
-  `);
-
-  const insertPermissionRequestStmt = db.prepare(`
-    INSERT INTO codex_permission_requests (request_id, session_id, tool_name, tool_input, turn_id, permission_mode, agent_id, agent_type, timestamp)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(request_id) DO UPDATE SET
-      tool_name = COALESCE(excluded.tool_name, codex_permission_requests.tool_name),
-      tool_input = COALESCE(excluded.tool_input, codex_permission_requests.tool_input),
-      turn_id = COALESCE(excluded.turn_id, codex_permission_requests.turn_id),
-      permission_mode = COALESCE(excluded.permission_mode, codex_permission_requests.permission_mode),
-      agent_id = COALESCE(excluded.agent_id, codex_permission_requests.agent_id),
-      agent_type = COALESCE(excluded.agent_type, codex_permission_requests.agent_type),
-      timestamp = MAX(excluded.timestamp, codex_permission_requests.timestamp)
-  `);
-
-  const insertCompactEventStmt = db.prepare(`
-    INSERT INTO codex_compact_events (session_id, event_type, turn_id, reason, timestamp)
-    VALUES (?, ?, ?, ?, ?)
-  `);
-
-  const insertSubagentEventStmt = db.prepare(`
-    INSERT INTO codex_subagent_events (session_id, event_type, subagent_id, parent_turn_id, agent_type, timestamp)
-    VALUES (?, ?, ?, ?, ?, ?)
-  `);
-
-  const updateSessionStopStmt = db.prepare(`
-    UPDATE codex_sessions
-    SET end_time = ?,
-        finish_reason = ?,
-        stop_hook_active = COALESCE(?, stop_hook_active),
-        git_end_branch = COALESCE(?, git_end_branch),
-        git_end_commit = COALESCE(?, git_end_commit),
-        git_end_dirty = COALESCE(?, git_end_dirty),
-        changed_files_json = COALESCE(?, changed_files_json)
-    WHERE session_id = ?
-  `);
-
-  const insertAssistantMessageStmt = db.prepare(`
-    INSERT INTO codex_messages (message_id, session_id, role, content, timestamp)
-    VALUES (?, ?, 'assistant', ?, ?)
-    ON CONFLICT(message_id) DO UPDATE SET
-      content = excluded.content,
-      timestamp = excluded.timestamp
-  `);
-
-  db.transaction(() => {
-    for (const { eventName, sessionId, timestamp, projectPath, agentName, payload } of events) {
-      ensureSessionExists(
-        selectSessionStmt,
-        insertSessionStmt,
-        updateSessionStmt,
-        sessionId,
-        timestamp,
-        projectPath,
-        agentName
-      );
-
-      const isEnvelope = payload.schema_version >= 1;
-
-      if (eventName === "SessionStart") {
-        let modelProvider: string | null = null;
-        let modelId: string | null = null;
-
-        const rawModel = payload.model ?? (isEnvelope ? payload.raw?.model : null);
-
-        if (rawModel) {
-          if (typeof rawModel === "object") {
-            modelProvider = rawModel.provider ?? rawModel.providerID ?? null;
-            modelId = rawModel.modelID ?? rawModel.modelId ?? null;
-          } else if (typeof rawModel === "string") {
-            if (rawModel.includes("/")) {
-              const parts = rawModel.split("/");
-              modelProvider = parts[0];
-              modelId = parts.slice(1).join("/");
-            } else {
-              modelId = rawModel;
-            }
-          }
-        }
-        if (!modelProvider) modelProvider = payload.model_provider ?? null;
-        if (!modelId) modelId = payload.model_id ?? null;
-
-        const sessionSource = payload.session_source ?? null;
-        const permissionMode = payload.permission_mode ?? null;
-        const transcriptPath = payload.transcript_path ?? null;
-        const git = extractGitContext(payload);
-
-        instrument("SessionStart", () => {
-          updateSessionStartStmt.run(
-            modelProvider, modelId, sessionSource, permissionMode, transcriptPath,
-            git.git_root, git.git_branch, git.git_commit, git.git_dirty, git.git_remote_url,
-            sessionId
-          );
-        });
-
-      } else if (eventName === "UserPromptSubmit") {
-        const messageId = extractFromEnvelope(payload, "messageID", "message_id", "message_id")
-          ?? payload.turn_id;
-        if (!messageId) continue;
-        const prompt = extractFromEnvelope(payload, "prompt", "content", "prompt") ?? "";
-        const turnId = extractTurnId(payload);
-
-        instrument("UserPromptSubmit", () => {
-          insertMessageStmt.run(messageId, sessionId, prompt, timestamp, turnId);
-        });
-
-      } else if (eventName === "PreToolUse") {
-        const callId = extractFromEnvelope(payload, "callID", "call_id", "tool_use_id");
-        if (!callId) continue;
-        const toolName = extractFromEnvelope(payload, "tool", "tool_name", "tool_name") ?? "";
-        const args = payload.args ?? payload.tool_input
-          ?? (isEnvelope ? payload.normalized?.tool_input : null) ?? null;
-        const inputArgs = args ? (typeof args === "string" ? args : JSON.stringify(args)) : null;
-        const turnId = extractTurnId(payload);
-
-        instrument("PreToolUse", () => {
-          insertToolCallStmt.run(callId, sessionId, toolName, inputArgs, timestamp, turnId);
-        });
-
-      } else if (eventName === "PostToolUse") {
-        const callId = extractFromEnvelope(payload, "callID", "call_id", "tool_use_id");
-        if (!callId) continue;
-        const toolName = extractFromEnvelope(payload, "tool", "tool_name", "tool_name") ?? "";
-        const toolResponse = payload.output ?? payload.tool_response
-          ?? (isEnvelope ? (payload.raw?.output ?? payload.raw?.tool_response) : null) ?? null;
-        const status = extractFromEnvelope(payload, "status", "status", "status") ?? "completed";
-        const turnId = extractTurnId(payload);
-        const exitCode = payload.exit_code ?? (isEnvelope ? payload.normalized?.exit_code : null) ?? payload.exitCode ?? null;
-
-        const existing = selectToolCallStmt.get(callId) as { start_time: number } | undefined;
-        let durationMs: number | null = null;
-        if (existing && typeof existing.start_time === "number") {
-          durationMs = timestamp - existing.start_time;
-        }
-
-        const truncatedOutput = truncateString(typeof toolResponse === "string" ? toolResponse : (toolResponse ? JSON.stringify(toolResponse) : null));
-
-        const truncationMeta = isEnvelope ? (payload.truncation ?? payload.normalized?.truncation ?? null) : null;
-        const truncationJson = truncationMeta ? JSON.stringify(truncationMeta) : null;
-
-        if (!existing) {
-          instrument("PostToolUse:insert", () => {
-            insertToolCallPostStmt.run(callId, sessionId, toolName || "unknown", truncatedOutput, status, timestamp, durationMs, turnId, exitCode, truncationJson);
-          });
-        } else {
-          instrument("PostToolUse:update", () => {
-            updateToolCallPostStmt.run(truncatedOutput, status, timestamp, durationMs, turnId, exitCode, truncationJson, callId);
-          });
-        }
-
-      } else if (eventName === "PermissionRequest") {
-        const toolName = isEnvelope ? (payload.normalized?.tool_name ?? null) : (payload.tool_name ?? payload.tool ?? null);
-        const toolInput = isEnvelope ? (payload.normalized?.tool_input ?? null) : (payload.tool_input ?? payload.input ?? null);
-        const turnId = extractTurnId(payload);
-        const permissionMode = isEnvelope ? (payload.permission_mode ?? payload.normalized?.permission_mode ?? null) : (payload.permission_mode ?? null);
-        const agentId = isEnvelope ? (payload.normalized?.agent_id ?? null) : (payload.agent_id ?? null);
-        const agentType = isEnvelope ? (payload.normalized?.agent_type ?? null) : (payload.agent_type ?? null);
-        const requestId = payload.record_id
-          ?? (() => {
-            const key = `${sessionId}-${timestamp}-${turnId ?? "unknown"}-${toolName ?? "unknown"}-${agentType ?? "unknown"}`;
-            const next = (permissionRequestCounters.get(key) ?? 0) + 1;
-            permissionRequestCounters.set(key, next);
-            return `${key}-${next}`;
-          })();
-
-        instrument("PermissionRequest", () => {
-          insertPermissionRequestStmt.run(requestId, sessionId, toolName, toolInput ? JSON.stringify(toolInput) : null, turnId, permissionMode, agentId, agentType, timestamp);
-        });
-
-      } else if (eventName === "PreCompact" || eventName === "PostCompact") {
-        const turnId = extractTurnId(payload);
-        const reason = isEnvelope ? (payload.normalized?.reason ?? null) : (payload.reason ?? null);
-
-        instrument("Compact", () => {
-          insertCompactEventStmt.run(sessionId, eventName, turnId, reason, timestamp);
-        });
-
-      } else if (eventName === "SubagentStart" || eventName === "SubagentStop") {
-        const subagentId = isEnvelope ? (payload.normalized?.subagent_id ?? null) : (payload.subagent_id ?? null);
-        const parentTurnId = isEnvelope ? (payload.normalized?.parent_turn_id ?? null) : (payload.parent_turn_id ?? payload.turn_id ?? null);
-        const agentType = isEnvelope ? (payload.normalized?.agent_type ?? null) : (payload.agent_type ?? null);
-
-        instrument("Subagent", () => {
-          insertSubagentEventStmt.run(sessionId, eventName, subagentId, parentTurnId, agentType, timestamp);
-        });
-
-      } else if (eventName === "Stop") {
-        const finishReason = payload.finishReason ?? payload.finish_reason
-          ?? (isEnvelope ? payload.normalized?.finish_reason : null) ?? null;
-        const stopHookActive = payload.stop_hook_active ?? (isEnvelope ? payload.normalized?.stop_hook_active : null) ?? null;
-        const git = extractGitContext(payload);
-
-        instrument("Stop:session", () => {
-          updateSessionStopStmt.run(
-            timestamp, finishReason, stopHookActive,
-            git.git_branch, git.git_commit, git.git_dirty, git.changed_files_json,
-            sessionId
-          );
-        });
-
-        const lastResponse = payload.lastResponse ?? (isEnvelope ? payload.raw?.lastResponse : null) ?? {};
-        const lastAssistantMessage = lastResponse.content ?? payload.last_assistant_message ?? "";
-        const messageId = lastResponse.messageID ?? payload.message_id ?? `msg_assistant_${sessionId}`;
-
-        instrument("Stop:assistantMessage", () => {
-          insertAssistantMessageStmt.run(messageId, sessionId, lastAssistantMessage, timestamp);
-        });
-      }
-    }
-  })();
+  const ingester = new TelemetryIngester(db);
+  ingester.ingestEvents(events);
 }
 
 if (import.meta.main) {

@@ -3,21 +3,10 @@ import * as fs from "fs";
 import * as path from "path";
 
 /**
- * Initializes and returns a SQLite database with the v1 capture contract schema.
- * Applies additive migrations for existing databases.
+ * Initializes the Codex schema tables.
+ * @param db - The SQLite database instance.
  */
-export function getIngestDb(dbPath: string): Database {
-  const dbDir = path.dirname(dbPath);
-  if (!fs.existsSync(dbDir)) {
-    fs.mkdirSync(dbDir, { recursive: true });
-  }
-
-  const db = new Database(dbPath);
-
-  db.exec("PRAGMA foreign_keys = ON;");
-  db.exec("PRAGMA journal_mode = WAL;");
-  db.run("PRAGMA busy_timeout = 5000;");
-
+export function initCodexSchema(db: Database): void {
   db.transaction(() => {
     db.exec(`
       CREATE TABLE IF NOT EXISTS codex_sessions (
@@ -129,6 +118,25 @@ export function getIngestDb(dbPath: string): Database {
   })();
 
   migrateAdditive(db);
+}
+
+/**
+ * Initializes and returns a SQLite database with the v1 capture contract schema.
+ * Applies additive migrations for existing databases.
+ */
+export function getIngestDb(dbPath: string): Database {
+  const dbDir = path.dirname(dbPath);
+  if (!fs.existsSync(dbDir)) {
+    fs.mkdirSync(dbDir, { recursive: true });
+  }
+
+  const db = new Database(dbPath);
+
+  db.exec("PRAGMA foreign_keys = ON;");
+  db.exec("PRAGMA journal_mode = WAL;");
+  db.run("PRAGMA busy_timeout = 5000;");
+
+  initCodexSchema(db);
 
   return db;
 }

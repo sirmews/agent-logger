@@ -35,6 +35,7 @@ export function createEnvelope(opts: {
   git_context?: GitContext | null;
   skip_raw_truncation?: boolean;
   truncation?: TruncationMeta | null;
+  captured_at?: number;
 }): CaptureEnvelope {
   let truncation: TruncationMeta | null = opts.truncation ?? null;
   let raw = opts.raw;
@@ -54,7 +55,7 @@ export function createEnvelope(opts: {
     schema_version: CAPTURE_SCHEMA_VERSION,
     logger_version: LOGGER_VERSION,
     record_id: randomUUID(),
-    captured_at: Date.now(),
+    captured_at: opts.captured_at ?? Date.now(),
     source_agent: opts.source_agent,
     source_event: opts.source_event,
     session_id: opts.session_id ?? extractSessionId(opts.raw),

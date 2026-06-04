@@ -189,6 +189,43 @@ This caveat does not require any code changes — it requires a clear-eyed view 
 
 ---
 
+## 5. Divergent Transports: JSONL Buffer vs. Direct SQLite
+
+### What is happening
+
+Codex and OpenCode write their telemetry using completely different transport mechanisms, even though they now share the exact same `CaptureEnvelope` data shape and SQLite schema:
+
+- **Codex** writes its `CaptureEnvelope` events to a local JSONL file buffer (`~/.local/share/codex/telemetry-buffer.jsonl`). An offline CLI script (`ingester.ts`) later reads this file and inserts the records into the database.
+- **OpenCode** writes its events *directly and synchronously* into the SQLite database (`~/.local/share/opencode/communication-logs.db`) using an in-process plugin hook. It skips the JSONL buffer entirely.
+
+### Why this matters
+
+Having two different ingestion paths makes the system harder to reason about. It means there are two different places where bugs can hide, and developers must understand both the async ingestion pipeline (Codex) and the synchronous database layer (OpenCode).
+
+### Rationale for the current behaviour
+
+This divergence is an intentional architectural trade-off based on the fundamentally different runtimes of the two agents:
+
+1. **Codex is a transient CLI**: Codex hooks are short-lived, fire-and-forget shell scripts with a strict execution timeout (usually 5 seconds). Opening a database connection, securing a SQLite file lock (potentially waiting for other processes), and executing schema migrations inside a short-lived shell script is a recipe for silent failures and blocking the agent. Appending to a flat JSONL file is atomic, instant, and fail-safe.
+2. **OpenCode is a persistent daemon**: OpenCode holds a long-lived, highly optimized `bun:sqlite` connection open in memory using WAL (Write-Ahead Logging) mode. Synchronous database writes in this environment are incredibly fast (microseconds).
+3. **The "Stale Data" Problem**: OpenCode allows custom tools (like `analyze_logs`) that execute SQL queries against the database *during* a live conversation. If OpenCode used a buffer, the database would be stale during the conversation, and the agent's tools would return outdated information. Direct database writes ensure strong, real-time consistency.
+4. **The "Stranded Data" Problem**: If OpenCode buffered its writes to memory or disk and waited for an "idle" event to ingest them, any sudden IDE closure or process crash would leave that telemetry stranded or lost.
+
+We accept the complexity of divergent transport mechanisms in order to guarantee **zero-latency safety for Codex** and **real-time tool consistency for OpenCode**.
+
+### Options when this becomes a real problem
+
+1. **Dual-write in OpenCode (Not Recommended)**: OpenCode could write to both the JSONL buffer and the database. This adds disk I/O overhead with no actual benefit.
+2. **Refactor tools to read the buffer (High Complexity)**: We could rewrite OpenCode's internal tools to parse the JSONL buffer on the fly and merge it with SQLite results in memory before answering LLM queries. This is massive engineering overhead for little gain.
+3. **Share the SQL logic (Implemented)**: Instead of sharing the transport, we share the *data layer*. The CLI `ingester.ts` and the OpenCode `src/index.ts` both use the same shared `CaptureEnvelope` generator and the same `INSERT INTO codex_*` SQL statements. This ensures perfect data parity without breaking the runtime architectures.
+
+### What is documented in code
+
+- `src/cli/ingester.ts` exposes reusable ingestion logic that can be consumed by both the offline CLI and the live OpenCode plugin.
+- `src/hooks/utils/envelope.ts` is the single source of truth for the data shape, used by both transports.
+
+---
+
 ## How to use this document
 
 For this release, quality is represented in two layers:
