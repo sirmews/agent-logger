@@ -135,6 +135,8 @@ function extractGitContext(payload: any): {
 
 export class TelemetryIngester {
   private db: Database;
+  // Safe from memory leak in daemon because createEnvelope() always provides a record_id.
+  // This map is only populated during legacy offline CLI ingestion.
   private permissionRequestCounters = new Map<string, number>();
 
   private selectSessionStmt: Statement;
@@ -249,11 +251,12 @@ export class TelemetryIngester {
     `);
 
     this.insertAssistantMessageStmt = db.prepare(`
-      INSERT INTO codex_messages (message_id, session_id, role, content, timestamp)
-      VALUES (?, ?, 'assistant', ?, ?)
+      INSERT INTO codex_messages (message_id, session_id, role, content, timestamp, turn_id)
+      VALUES (?, ?, 'assistant', ?, ?, ?)
       ON CONFLICT(message_id) DO UPDATE SET
         content = excluded.content,
-        timestamp = excluded.timestamp
+        timestamp = excluded.timestamp,
+        turn_id = COALESCE(excluded.turn_id, codex_messages.turn_id)
     `);
   }
 
@@ -446,8 +449,9 @@ export class TelemetryIngester {
       const lastAssistantMessage = lastResponse.content ?? payload.last_assistant_message ?? "";
       const messageId = lastResponse.messageID ?? payload.message_id ?? `msg_assistant_${sessionId}`;
 
+      const turnId = extractTurnId(payload);
       instrument("Stop:assistantMessage", () => {
-        this.insertAssistantMessageStmt.run(messageId, sessionId, lastAssistantMessage, timestamp);
+        this.insertAssistantMessageStmt.run(messageId, sessionId, lastAssistantMessage, timestamp, turnId);
       });
     }
   }

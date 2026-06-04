@@ -9,15 +9,23 @@ const FIXTURES_DIR = path.resolve("tests/codex-fixtures");
 
 
 describe("OpenCode Parity Contract", () => {
+  const cleanupDb = (dbPath: string) => {
+    try {
+      if (fs.existsSync(dbPath)) fs.unlinkSync(dbPath);
+      if (fs.existsSync(dbPath + "-wal")) fs.unlinkSync(dbPath + "-wal");
+      if (fs.existsSync(dbPath + "-shm")) fs.unlinkSync(dbPath + "-shm");
+    } catch (err) {}
+  };
+
   beforeEach(() => {
     process.env.AGENT_LOGGER_DB_PATH = path.join(FIXTURES_DIR, `opencode-parity-${Date.now()}-${Math.random()}.db`);
+    cleanupDb(process.env.AGENT_LOGGER_DB_PATH as string);
     const dbPath = process.env.AGENT_LOGGER_DB_PATH as string;
     if (dbPath && fs.existsSync(dbPath)) fs.unlinkSync(dbPath);
   });
 
   afterEach(() => {
-    const dbPath = process.env.AGENT_LOGGER_DB_PATH as string;
-    if (dbPath && fs.existsSync(dbPath)) fs.unlinkSync(dbPath);
+    cleanupDb(process.env.AGENT_LOGGER_DB_PATH as string);
   });
 
   test("OpenCode events map exactly to Codex tables", async () => {

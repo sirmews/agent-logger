@@ -1273,7 +1273,6 @@ export const CommunicationLoggerPlugin: Plugin = async ({
           let envelope = null;
           const sid = p?.sessionID ?? "unknown";
           const timestamp = p?.info?.time?.completed ?? p?.info?.time?.created ?? p?.part?.time?.end ?? p?.part?.time?.start ?? p?.time ?? Date.now();
-          const turnId = p?.messageID ?? p?.part?.messageID ?? p?.tool?.messageID ?? null;
 
           if (t === "session.created") {
             const info = p.info ?? {};
@@ -1283,7 +1282,7 @@ export const CommunicationLoggerPlugin: Plugin = async ({
               source_event: "SessionStart",
               session_id: sid,
               cwd: directory,
-              model: info.model ? `${info.model.providerID}/${info.model.modelID}` : null,
+              model: info.model ? (typeof info.model === "object" ? `${info.model.providerID ?? "unknown"}/${info.model.modelID ?? "unknown"}` : String(info.model)) : null,
               session_source: "startup",
               git_context: getSessionStartGitContext(directory),
               raw: e,
