@@ -291,6 +291,8 @@ export class TelemetryIngester {
         this.ingestSingleEvent(event);
       }
     })();
+    // Note: To completely decouple, quality scoring is no longer done during CLI ingestion.
+    // It will be calculated dynamically on export.
   }
 
   /**

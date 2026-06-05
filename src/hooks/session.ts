@@ -4,7 +4,7 @@ import { createEnvelope } from './utils/envelope.js';
 import { getSessionStartGitContext, getStopGitContext } from './utils/git-context.js';
 import type { CodexPermissionMode, CodexSessionSource } from './types.js';
 
-function main() {
+async function main() {
   try {
     const isStart = process.argv.includes('--start');
     const isStop = process.argv.includes('--stop');
@@ -81,7 +81,24 @@ function main() {
         git_context: gitContext,
       });
 
-      writeToBuffer(envelope);
+            writeToBuffer(envelope);
+      
+      // Auto-ingest offline for seamless dashboard/export integration
+      if (!process.env.AGENT_LOGGER_DISABLE_AUTO_INGEST) {
+        try {
+          const { spawn } = await import("child_process");
+          // Spawn the agent-logger ingest command completely detached so it doesn't block Codex
+          const child = spawn("bun", ["run", "agent-logger", "ingest"], {
+            detached: true,
+            stdio: "ignore",
+          });
+          child.on('error', () => {}); // Prevent unhandled exceptions
+          child.unref();
+        } catch (e) {
+          // Fail silently
+        }
+      }
+      
       console.log(JSON.stringify({ continue: true }));
     }
 

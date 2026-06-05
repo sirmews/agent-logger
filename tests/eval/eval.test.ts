@@ -74,7 +74,7 @@ describe("evaluation harness", () => {
       const goldLines = readFileSync(goldLabelsPath, "utf-8").split("\n").filter(Boolean);
       const exportLines = jsonl.split("\n").filter(Boolean);
 
-      expect(exportLines.length).toBeGreaterThanOrEqual(goldLines.length);
+            expect(exportLines.length).toBeGreaterThanOrEqual(goldLines.length);
 
       const gold = JSON.parse(goldLines[0]);
       const exported = JSON.parse(exportLines[0]);

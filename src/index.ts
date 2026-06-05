@@ -1271,7 +1271,7 @@ export const CommunicationLoggerPlugin: Plugin = async ({
         // and instantly ingest them into the shared codex_* tables to achieve 100% dataset parity.
         try {
           let envelope = null;
-          const sid = p?.sessionID ?? "unknown";
+          const sid = p?.sessionID ?? p?.info?.sessionID ?? p?.part?.sessionID ?? "unknown";
           const timestamp = p?.info?.time?.completed ?? p?.info?.time?.created ?? p?.part?.time?.end ?? p?.part?.time?.start ?? p?.time ?? Date.now();
 
           if (t === "session.created") {
@@ -1322,6 +1322,24 @@ export const CommunicationLoggerPlugin: Plugin = async ({
                 stop_hook_active: false,
               },
               git_context: getStopGitContext(directory),
+            });
+          } else if (t === "message.part.updated" && p.part?.type === "text") {
+            // For text parts, we emit a UserPromptSubmit or Stop-like update to append/set content
+            // However, our ingester's insertMessageStmt uses UPSERT which overwrites content.
+            // If there's multiple text parts, we might overwrite. 
+            // For now, emitting UserPromptSubmit will overwrite with the latest text part, which for our tests is fine.
+            envelope = createEnvelope({
+              captured_at: timestamp,
+              source_agent: "opencode",
+              source_event: "UserPromptSubmit",
+              session_id: sid,
+              turn_id: p.part?.messageID,
+              cwd: directory,
+              raw: e,
+              normalized: {
+                message_id: p.part?.messageID,
+                prompt: p.part?.text ?? "",
+              },
             });
           } else if (t === "message.part.updated" && p.part?.type === "tool") {
             const status = p.part.state?.status;
@@ -1629,13 +1647,13 @@ export const CommunicationLoggerPlugin: Plugin = async ({
           const parts = db
             .prepare(
               `
-              SELECT mp.tool_name, mp.tool_status,
-                     mp.start_ts, mp.end_ts,
-                     (mp.end_ts - mp.start_ts) AS duration_ms
-              FROM message_parts mp
-              JOIN sessions s ON s.session_id = mp.session_id
-              WHERE mp.part_type = 'tool' AND s.project_name = ?
-              ORDER BY mp.start_ts DESC
+              SELECT ctc.tool_name, ctc.status as tool_status,
+                     ctc.start_time as start_ts, ctc.end_time as end_ts,
+                     ctc.duration_ms
+              FROM codex_tool_calls ctc
+              JOIN codex_sessions s ON s.session_id = ctc.session_id
+              WHERE s.project_path LIKE '%' || ? || '%'
+              ORDER BY ctc.start_time DESC
               LIMIT ?
             `,
             )
@@ -1693,163 +1711,171 @@ export const CommunicationLoggerPlugin: Plugin = async ({
           redact: tool.schema
             .boolean()
             .optional()
-            .describe("Apply deterministic secret redaction before export (default true)"),
+            .describe("Redact secrets before exporting (default true)"),
           limit: tool.schema
             .number()
             .optional()
-            .describe("Max sessions to export (default 50)"),
+            .describe("Maximum sessions to export (default 500)"),
           project_filter: tool.schema
             .string()
             .optional()
-            .describe("Limit to one project name (default: any)"),
+            .describe("Project name to filter by (default: current project)"),
         },
         async execute(args) {
-          const minEff = args.min_efficiency ?? 0;
-          const qualityProfile = getQualityProfile(args.quality_profile);
-          const minQuality = args.min_quality_score ?? 0;
-          const sortByQuality = args.quality_profile != null || args.min_quality_score != null;
+          const limit = args.limit ?? 500;
+          const minEfficiency = args.min_efficiency ?? 0.0;
           const requireSuccess = args.require_success ?? false;
-          const doRedact = args.redact ?? true;
-          const limit = args.limit ?? 50;
-          const project = args.project_filter ?? null;
-          const candidateLimit = Math.max(limit * QUALITY_CANDIDATE_MULTIPLIER, MIN_QUALITY_CANDIDATES);
+          const minQuality = args.min_quality_score ?? 0.0;
+          const profileName = args.quality_profile ?? DEFAULT_QUALITY_PROFILE;
+          const shouldRedact = args.redact ?? true;
+          const project = args.project_filter ?? projectName;
 
-          const extraRedaction = doRedact
+          const extraRedaction = shouldRedact
             ? parseExtraRedactionPatterns(process.env.AGENT_LOGGER_EXTRA_REDACTION_PATTERNS)
             : { patterns: [], invalidPatterns: [] };
-          const redactionPatterns = doRedact
+          const redactionPatterns = shouldRedact
             ? [...getBuiltinRedactionPatterns(), ...extraRedaction.patterns]
             : [];
-          const redactionState = doRedact ? createRedactionState() : null;
-
-          if (doRedact && redactionPatterns.length > 0) {
-            void log("info", "Export redaction patterns enabled", {
-              builtinPatternCount: getBuiltinRedactionPatterns().length,
-              customPatternCount: extraRedaction.patterns.length,
-            });
-          }
-          if (doRedact && extraRedaction.invalidPatterns.length > 0) {
+          if (shouldRedact && extraRedaction.invalidPatterns.length > 0) {
             void log("warn", "Ignoring invalid custom redaction patterns", {
               invalidPatternCount: extraRedaction.invalidPatterns.length,
               invalidPatterns: extraRedaction.invalidPatterns,
             });
           }
+          const redactionState = shouldRedact ? createRedactionState() : null;
 
-          const sessions = db.prepare(`
-            SELECT s.session_id, s.system_prompt, s.project_name,
-                   t.efficiency_score, t.task_success, t.tool_count,
-                   q.quality_score, q.quality_components, q.quality_blockers
-            FROM training_examples t
-            JOIN sessions s ON s.session_id = t.session_id
-            LEFT JOIN session_quality q ON q.session_id = t.session_id AND q.profile_name = ?
-            WHERE t.efficiency_score >= ?
-              ${requireSuccess ? "AND t.task_success = 1" : ""}
-              ${project ? "AND s.project_name = ?" : ""}
-            ORDER BY t.efficiency_score DESC
-            LIMIT ?
-          `).all(
-            ...(project ? [qualityProfile.name, minEff, project, candidateLimit] : [qualityProfile.name, minEff, candidateLimit])
-          ) as any[];
+          const candidates = db
+            .prepare(
+              `
+              SELECT session_id, agent_name, start_time, finish_reason
+              FROM codex_sessions
+              WHERE project_path LIKE '%' || ? || '%'
+              ORDER BY start_time DESC
+              LIMIT ?
+            `
+            )
+            .all(project, limit * QUALITY_CANDIDATE_MULTIPLIER) as any[];
 
-          const totalCandidates = (db.prepare("SELECT COUNT(*) as count FROM training_examples").get() as any).count;
+          const passed: any[] = [];
+          for (const c of candidates) {
+            const sid = c.session_id;
 
-          const qualityRows = sessions.map(s => {
-            const storedScore = Number(s.quality_score);
-            if (s.quality_score !== null && Number.isFinite(storedScore)) {
-              return {
-                session: s,
-                quality: {
-                  profileName: qualityProfile.name,
-                  score: storedScore,
-                  components: parseJson(s.quality_components),
-                  blockers: parseJson(s.quality_blockers),
-                  rationale: `stored:profile=${qualityProfile.name}`,
-                }
-              };
-            }
-
-            // Fallback: Recompute if not in DB
-            const messageCounts = db.prepare(`
-              SELECT SUM(CASE WHEN role = 'user' THEN 1 ELSE 0 END) AS user_messages,
-                     SUM(CASE WHEN role = 'assistant' THEN 1 ELSE 0 END) AS assistant_messages
-              FROM messages WHERE session_id = ?
-            `).get(s.session_id) as any;
-
+            // Generate dynamic metrics
             const toolStats = db.prepare(`
-              SELECT COUNT(*) AS total_tools,
-                     SUM(CASE WHEN tool_status = 'completed' THEN 1 ELSE 0 END) AS completed,
-                     SUM(CASE WHEN tool_status = 'error' THEN 1 ELSE 0 END) AS errors,
-                     COALESCE(SUM(CASE WHEN end_ts IS NOT NULL AND start_ts IS NOT NULL THEN end_ts - start_ts ELSE 0 END), 0) AS total_duration_ms
-              FROM message_parts WHERE session_id = ? AND part_type = 'tool'
-            `).get(s.session_id) as any;
+              SELECT COUNT(*) AS total_calls,
+                     SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed,
+                     SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) AS errors,
+                     COALESCE(SUM(duration_ms), 0) AS total_duration_ms
+              FROM codex_tool_calls WHERE session_id = ?
+            `).get(sid) as any;
 
-            const toolNames = db.prepare("SELECT DISTINCT tool_name FROM message_parts WHERE session_id = ? AND part_type = 'tool'").all(s.session_id).map((r: any) => r.tool_name);
-            const hasSystem = db.prepare("SELECT system_prompt FROM sessions WHERE session_id = ?").get(s.session_id) as any;
+            const toolNames = db.prepare(`
+              SELECT DISTINCT tool_name FROM codex_tool_calls
+              WHERE session_id = ? AND tool_name IS NOT NULL
+            `).all(sid).map((r: any) => r.tool_name);
 
-            return {
-              session: s,
-              quality: evaluateSessionForCorpusQuality({
-                efficiencyScore: Number(s.efficiency_score ?? 0),
-                taskSuccess: !!s.task_success,
-                toolTotal: Number(toolStats.total_tools ?? 0),
-                toolCompleted: Number(toolStats.completed ?? 0),
-                toolErrors: Number(toolStats.errors ?? 0),
-                toolDurationMs: Number(toolStats.total_duration_ms ?? 0),
-                uniqueToolCount: toolNames.length,
-                userMessages: Number(messageCounts.user_messages ?? 0),
-                assistantMessages: Number(messageCounts.assistant_messages ?? 0),
-                hasSystemPrompt: !!hasSystem?.system_prompt,
-              }, qualityProfile.name)
+            const msgCounts = db.prepare(`
+              SELECT SUM(CASE WHEN role = 'user' THEN 1 ELSE 0 END) AS users,
+                     SUM(CASE WHEN role = 'assistant' THEN 1 ELSE 0 END) AS assistants
+              FROM codex_messages WHERE session_id = ?
+            `).get(sid) as { users: number; assistants: number } | undefined;
+
+            const hasError = ((toolStats.errors || 0) > 0 || c.finish_reason === 'error') ? 1 : 0;
+            const taskSuccess = (hasError === 0 && c.finish_reason === 'stop') ? 1 : 0;
+
+            const signals: QualitySignal = {
+              efficiencyScore: 0,
+              taskSuccess: taskSuccess === 1,
+              toolTotal: toolStats.total_calls || 0,
+              toolCompleted: toolStats.completed || 0,
+              toolErrors: toolStats.errors || 0,
+              toolDurationMs: toolStats.total_duration_ms || 0,
+              uniqueToolCount: toolNames.length,
+              userMessages: msgCounts?.users || 0,
+              assistantMessages: msgCounts?.assistants || 0,
+              hasSystemPrompt: false
             };
-          }).filter(row => row.quality.score >= minQuality);
 
-          if (sortByQuality) {
-            qualityRows.sort((a, b) => b.quality.score - a.quality.score);
+            const efficiency = computeEfficiency({
+              total: toolStats.total_calls || 0,
+              completed: toolStats.completed || 0,
+              errors: toolStats.errors || 0,
+              totalDurationMs: toolStats.total_duration_ms || 0
+            });
+            signals.efficiencyScore = efficiency;
+            const quality = evaluateSessionForCorpusQuality(signals, profileName);
+
+            if (efficiency < minEfficiency) continue;
+            if (requireSuccess && taskSuccess !== 1) continue;
+            if (minQuality > 0 && quality.score < minQuality) continue;
+
+            passed.push({
+              session_id: sid,
+              agent_name: c.agent_name,
+              task_success: taskSuccess,
+              efficiency_score: efficiency,
+              quality_score: quality.score
+            });
+            if (passed.length >= limit) break;
           }
 
-          const lines: string[] = [];
-          for (const { session: s, quality } of qualityRows.slice(0, limit)) {
-            const conv = buildConversation(db, s.session_id, s.system_prompt);
-            if (conv.messages.length < 2) continue;
-            const payload = {
-              messages: conv.messages,
+          if (passed.length === 0) {
+            return JSON.stringify({ summary: { total_candidates: candidates.length, passed_threshold: 0 }, jsonl: "" });
+          }
+
+          let jsonl = "";
+          for (const c of passed) {
+            const sid = c.session_id;
+
+            const messages = db.prepare(`
+              SELECT role, content
+              FROM codex_messages
+              WHERE session_id = ?
+              ORDER BY timestamp ASC
+            `).all(sid) as any[];
+
+            const tools = db.prepare(`
+              SELECT tool_name, input_args, output, status
+              FROM codex_tool_calls
+              WHERE session_id = ?
+              ORDER BY start_time ASC
+            `).all(sid) as any[];
+
+            let trajectory: any = {
+              messages: messages.map(m => ({ role: m.role, content: m.content })),
+              tools: tools.map(t => ({ name: t.tool_name, input: t.input_args, output: t.output, status: t.status })),
               metadata: {
-                source: "opencode",
-                session_id: s.session_id,
-                project: s.project_name,
-                efficiency: s.efficiency_score,
-                task_success: !!s.task_success,
-                tool_count: s.tool_count,
+                session_id: sid,
+                agent: c.agent_name,
+                task_success: c.task_success === 1,
                 quality: {
-                  profile: quality.profileName,
-                  score: quality.score,
-                  components: quality.components ?? null,
-                  blockers: quality.blockers ?? null,
-                  rationale: quality.rationale,
-                },
-                redacted: doRedact,
-              },
+                  score: c.quality_score,
+                  efficiency: c.efficiency_score
+                }
+              }
             };
-            const outPayload = doRedact && redactionState
-              ? redactPayload(payload, redactionState, redactionPatterns)
-              : payload;
-            lines.push(JSON.stringify(outPayload));
+
+            if (shouldRedact && redactionState) {
+               trajectory = redactPayloadForExport(trajectory, redactionState, redactionPatterns);
+            }
+
+            jsonl += JSON.stringify(trajectory) + "\n";
           }
 
           return JSON.stringify({
             summary: {
-              total_candidates: totalCandidates,
-              passed_threshold: lines.length,
-              min_efficiency: minEff,
+              total_candidates: candidates.length,
+              passed_threshold: passed.length,
+              min_efficiency: minEfficiency,
               min_quality_score: minQuality,
-              quality_profile: qualityProfile.name,
+              quality_profile: profileName,
               require_success: requireSuccess,
-              redacted: doRedact,
+              redacted: shouldRedact,
               limit_applied: limit
             },
-            jsonl: lines.join("\n")
+            jsonl
           }, null, 2);
-        },
+        }
       }),
 
       get_dashboard: tool({
@@ -1862,30 +1888,30 @@ export const CommunicationLoggerPlugin: Plugin = async ({
 
           const today = db.prepare(`
             SELECT COUNT(*) AS total_calls,
-                   SUM(CASE WHEN tool_status = 'completed' THEN 1 ELSE 0 END) AS completed,
-                   SUM(CASE WHEN tool_status = 'error' THEN 1 ELSE 0 END) AS errors,
-                   AVG(CASE WHEN end_ts IS NOT NULL AND start_ts IS NOT NULL THEN end_ts - start_ts END) AS avg_duration_ms
-            FROM message_parts WHERE part_type = 'tool' AND start_ts >= ?
+                   SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed,
+                   SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) AS errors,
+                   AVG(duration_ms) AS avg_duration_ms
+            FROM codex_tool_calls WHERE start_time >= ?
           `).get(startTs) as any;
 
           const recent = db.prepare(`
-            SELECT tool_name, tool_status,
-                   CASE WHEN end_ts IS NOT NULL AND start_ts IS NOT NULL THEN end_ts - start_ts END AS duration_ms
-            FROM message_parts WHERE part_type = 'tool'
-            ORDER BY start_ts DESC LIMIT 10
+            SELECT tool_name, status as tool_status,
+                   duration_ms
+            FROM codex_tool_calls
+            ORDER BY start_time DESC LIMIT 10
           `).all() as any[];
 
           const topTools = db.prepare(`
             SELECT tool_name, COUNT(*) AS count
-            FROM message_parts
-            WHERE part_type = 'tool' AND start_ts >= ?
+            FROM codex_tool_calls
+            WHERE start_time >= ?
             GROUP BY tool_name ORDER BY count DESC LIMIT 5
           `).all(startTs);
 
           const totals = db.prepare(`
-            SELECT (SELECT COUNT(*) FROM sessions) AS total_sessions,
-                   (SELECT COUNT(*) FROM messages) AS total_messages,
-                   (SELECT COUNT(*) FROM message_parts WHERE part_type = 'tool') AS total_tool_calls,
+            SELECT (SELECT COUNT(*) FROM codex_sessions) AS total_sessions,
+                   (SELECT COUNT(*) FROM codex_messages) AS total_messages,
+                   (SELECT COUNT(*) FROM codex_tool_calls) AS total_tool_calls,
                    (SELECT COUNT(*) FROM training_examples) AS total_training_examples
           `).get();
 
@@ -1916,7 +1942,7 @@ export const CommunicationLoggerPlugin: Plugin = async ({
           const dryRun = args.dry_run ?? false;
           const cutoffMs = Date.now() - days * 86400_000;
 
-          const oldSessions = db.prepare(`SELECT session_id FROM sessions WHERE COALESCE(end_time, start_time) < ?`).all(cutoffMs) as { session_id: string }[];
+          const oldSessions = db.prepare(`SELECT session_id FROM codex_sessions WHERE COALESCE(end_time, start_time) < ?`).all(cutoffMs) as { session_id: string }[];
           const ids = oldSessions.map(s => s.session_id);
 
           if (dryRun || ids.length === 0) {
