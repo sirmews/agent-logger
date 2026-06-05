@@ -178,7 +178,26 @@ Validation:
 - Exercise OpenCode export paths with redaction enabled.
 - Confirm OpenCode records remain useful even when exact Codex fields such as `turn_id` or `tool_use_id` differ.
 
-## PR 3: Transcript Parsing Research and Prototype
+## PR 3: Export & Synthesis Parity
+
+Goal: wire the legacy export and scoring tools to read from the unified `codex_*` tables so both OpenCode and Codex trajectories are exported, and automate Codex ingest.
+
+Recommended implementation scope:
+
+1. **Migrate Export Tool**: Update `export_training_data` to query `codex_sessions`, `codex_messages`, and `codex_tool_calls` instead of the legacy tables.
+2. **Migrate Dashboard**: Update `get_dashboard` and `analyze_logs` to query the unified tables.
+3. **Migrate Quality Scoring**: Update `refreshSessionAggregates` and `refreshTrainingExample` to read from the `codex_*` tables. Ensure efficiency scores are generated for Codex sessions.
+4. **Trigger Codex Scoring**: Update the CLI `ingester.ts` to trigger the quality scoring pipeline for a session after it finishes ingesting it from the JSONL buffer.
+5. **Auto-Ingest Codex on Stop**: Update the Codex `Stop` hook (`src/hooks/session.ts`) to spawn `agent-logger ingest` as a detached background process, making Codex ingestion entirely invisible and automatic to the user.
+6. Verify `export_training_data` now outputs identical JSONL files containing both agent formats.
+
+Validation:
+
+- Run `bun run quality`.
+- Export a mixed database and confirm both agent runs appear in the JSONL output.
+- Run a local Codex session and verify it appears in the `agent-logger view` dashboard instantly without running the ingest command manually.
+
+## PR 4: Transcript Parsing Research and Prototype
 
 Goal: decide whether Codex transcripts are reliable enough to enrich training records.
 
